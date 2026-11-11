@@ -18,6 +18,12 @@ Every finished lookup is saved to a SQLite database (`-db`, default `sctrackid.d
 - The archive panel searches all decoded sets by set title, uploader, artist or track name, and shows where in the set a matching track plays.
 - A new run only replaces a stored result if it is at least as complete.
 
+### Single matches and repeat runs
+
+A track that Shazam hears in only one sample is as often a stray match as a real one. Each of these is listened to again half an interval before and after. If it is heard again it counts as two matches (high confidence); if not, it stays in the list as low confidence, so `min confidence: medium` hides it. This needs `-sample` to be at most half of `-interval` (the defaults, 12 and 30, are fine).
+
+Shazam answers are cached per set. Once a set has been decoded completely, a later run that finds all its answers in the cache (a "force rescan", or the same set with other options) does not download the audio again.
+
 ### Confirming and retrying tracks
 
 Each track of a decoded set has two buttons in the "verify" column:
@@ -25,7 +31,7 @@ Each track of a decoded set has two buttons in the "verify" column:
 - **✓** marks the track as confirmed by a user (click again to take it back). Confirmed tracks are labelled "confirmed" in the list and the `.txt` export, and are shown whatever the confidence filter is.
 - **↻** is for a wrong track. It queues a short job that listens again around that timestamp, at offsets the first run did not use, and replaces the entry with whatever else Shazam hears there. If it mostly hears a neighbouring track that is already listed, the wrong entry is removed instead. The rejected track stays noted on the corrected entry and is not offered again. If nothing else is found the job fails with the reason and the entry stays as it was.
 
-Both are stored in the archive, so they need `-db`. They survive a rescan: confirmed and retried entries are kept, and a rejected track does not return to its slot. A retry needs a proof of work and counts against the job limits like any submission; confirming is open to every visitor.
+Both are stored in the archive, so they need `-db`. They survive a rescan: confirmed and retried entries are kept, and a rejected track does not return to its slot. A retry needs a proof of work and counts against the job limits like any submission, but it runs ahead of the full lookups waiting in the queue; confirming is open to every visitor.
 
 Bot/spam protection is built in and needs no setup:
 

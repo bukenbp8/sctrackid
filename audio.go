@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"time"
 )
 
@@ -28,6 +27,7 @@ type sample struct {
 	sig    []byte
 	n      int
 	peaks  int
+	alt    *sample // a second window half an interval later, for double-checking lone matches
 }
 
 // pacer spaces requests start-to-start and adapts to rate limiting:
@@ -60,7 +60,66 @@ func (p *pacer) limited() {
 type shazamCache struct {
 	path string
 	hits map[int]*ShazamTrack // offset -> result (nil = no match)
+	meta *cacheMeta           // nil until a run got through the whole set
 	f    *os.File
+}
+
+// cacheMeta describes the windows of a completely decoded set, so a later run
+// that finds all its answers in the cache does not have to fetch the audio.
+type cacheMeta struct {
+	Interval int   `json:"interval"`
+	N        int   `json:"n"`      // regular windows
+	Alts     []int `json:"alts"`   // offsets of the in-between windows that exist
+	Silent   []int `json:"silent"` // offsets (either kind) too quiet to send
+}
+
+// windows rebuilds the window list without signatures.
+func (m *cacheMeta) windows() <-chan sample {
+	alts, silent := map[int]bool{}, map[int]bool{}
+	for _, o := range m.Alts {
+		alts[o] = true
+	}
+	for _, o := range m.Silent {
+		silent[o] = true
+	}
+	mk := func(off int) sample {
+		s := sample{offset: off, peaks: silentPeaks}
+		if silent[off] {
+			s.peaks = 0
+		}
+		return s
+	}
+	ch := make(chan sample, m.N)
+	for i := 0; i < m.N; i++ {
+		s := mk(m.Interval/2 + i*m.Interval)
+		if a := s.offset + m.Interval/2; alts[a] {
+			as := mk(a)
+			s.alt = &as
+		}
+		ch <- s
+	}
+	close(ch)
+	return ch
+}
+
+func (c *shazamCache) putMeta(interval int, got []sample) {
+	m := &cacheMeta{Interval: interval, N: len(got), Alts: []int{}, Silent: []int{}}
+	for _, s := range got {
+		if s.peaks < silentPeaks {
+			m.Silent = append(m.Silent, s.offset)
+		}
+		if s.alt != nil {
+			m.Alts = append(m.Alts, s.alt.offset)
+			if s.alt.peaks < silentPeaks {
+				m.Silent = append(m.Silent, s.alt.offset)
+			}
+		}
+	}
+	c.meta = m
+	if c.f != nil {
+		b, _ := json.Marshal(map[string]any{"meta": m})
+		_, _ = c.f.Write(append(b, '\n'))
+	}
 }
 
 func openCache(track *Track, o options) *shazamCache {
@@ -79,12 +138,19 @@ func openCache(track *Track, o options) *shazamCache {
 	if !o.noCache {
 		if f, err := os.Open(c.path); err == nil {
 			sc := bufio.NewScanner(f)
+			sc.Buffer(nil, 4<<20) // the meta line of a long set is long
 			for sc.Scan() {
 				var line struct {
-					O int          `json:"o"`
-					T *ShazamTrack `json:"t"`
+					O    int          `json:"o"`
+					T    *ShazamTrack `json:"t"`
+					Meta *cacheMeta   `json:"meta"`
 				}
-				if json.Unmarshal(sc.Bytes(), &line) == nil {
+				if json.Unmarshal(sc.Bytes(), &line) != nil {
+					continue
+				}
+				if line.Meta != nil {
+					c.meta = line.Meta
+				} else {
 					c.hits[line.O] = line.T
 				}
 			}
@@ -132,6 +198,21 @@ func decode(ctx context.Context, input string, o options) (<-chan sample, <-chan
 		r := bufio.NewReaderSize(stdout, 1<<20)
 		pos := 0
 		buf := make([]byte, o.sampleLen*sampleRate*2)
+		// read the next window; short reports that the audio ended inside it
+		window := func(off int) (s *sample, short bool) {
+			n, rerr := io.ReadFull(r, buf)
+			pos += n / 2
+			if n/2 < 4*sampleRate {
+				return nil, true
+			}
+			samples := make([]int16, n/2)
+			for i := range samples {
+				samples[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
+			}
+			sig, peaks := MakeSignature(samples)
+			return &sample{offset: off, sig: sig, n: len(samples), peaks: peaks}, rerr != nil
+		}
+		altGap := (o.interval/2 - o.sampleLen) * sampleRate // < 0: no room for in-between windows
 		for off := o.interval / 2; ; off += o.interval {
 			if skip := off*sampleRate - pos; skip > 0 {
 				n, _ := io.CopyN(io.Discard, r, int64(skip*2))
@@ -140,18 +221,19 @@ func decode(ctx context.Context, input string, o options) (<-chan sample, <-chan
 					break
 				}
 			}
-			n, rerr := io.ReadFull(r, buf)
-			pos += n / 2
-			if n/2 < 4*sampleRate {
+			s, short := window(off)
+			if s == nil {
 				break
 			}
-			samples := make([]int16, n/2)
-			for i := range samples {
-				samples[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
+			if !short && altGap >= 0 {
+				n, _ := io.CopyN(io.Discard, r, int64(altGap*2))
+				pos += int(n / 2)
+				if short = int(n/2) < altGap; !short {
+					s.alt, short = window(off + o.interval/2)
+				}
 			}
-			sig, peaks := MakeSignature(samples)
-			out <- sample{off, sig, len(samples), peaks}
-			if rerr != nil {
+			out <- *s
+			if short {
 				break
 			}
 		}
@@ -161,15 +243,33 @@ func decode(ctx context.Context, input string, o options) (<-chan sample, <-chan
 	return out, errc
 }
 
-var errShazamBlocked = errors.New("Shazam keeps rate limiting; stopped early (finished samples are cached, rerun later to resume)")
+var (
+	errShazamBlocked = errors.New("Shazam keeps rate limiting; stopped early (finished samples are cached, rerun later to resume)")
+	errNeedAudio     = errors.New("a sample that is not cached is needed")
+)
+
+var recognize = Recognize // swapped out in tests
 
 func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int, o options, onPause func(), onMatch func(artist, title string)) ([]Candidate, error) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return nil, errors.New("ffmpeg not found in PATH; skipping fingerprinting")
-	}
 	cache := openCache(track, o)
 	defer cache.close()
 
+	// A complete earlier run recorded which windows the set has. If everything
+	// this run asks Shazam is already cached, no audio is needed at all.
+	if m := cache.meta; m != nil && m.Interval == o.interval {
+		out, _, err := scanWindows(ctx, m.windows(), cache, dur, o, onPause, onMatch)
+		if !errors.Is(err, errNeedAudio) {
+			if err == nil {
+				logf("· audio: every sample was already cached, nothing downloaded")
+			}
+			return out, err
+		}
+		logf("· some samples are not cached yet, fetching the audio")
+	}
+
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return nil, errors.New("ffmpeg not found in PATH; skipping fingerprinting")
+	}
 	input := o.file
 	if input == "" {
 		u, snipped, err := sc.StreamURL(ctx, track)
@@ -182,15 +282,32 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 		input = u
 	}
 	stream, decodeErr := decode(ctx, input, o)
+	out, got, err := scanWindows(ctx, stream, cache, dur, o, onPause, onMatch)
+	if err != nil {
+		return out, err
+	}
+	if err := <-decodeErr; err != nil {
+		return out, fmt.Errorf("ffmpeg: %w", err)
+	}
+	cache.putMeta(o.interval, got)
+	return out, nil
+}
 
+// scanWindows asks Shazam about the windows of a set: a coarse pass refined
+// where results differ, then a second listen for every track heard only once.
+// Windows without a signature (rebuilt from the cache) can only be answered
+// from the cache; needing more than that returns errNeedAudio. On success the
+// returned windows are the complete set.
+func scanWindows(ctx context.Context, stream <-chan sample, cache *shazamCache, dur int, o options, onPause func(), onMatch func(artist, title string)) ([]Candidate, []sample, error) {
 	var (
 		got     []sample
-		results = map[int]*ShazamTrack{} // window index -> result
+		results = map[int]*ShazamTrack{} // window offset -> result
 		done    = map[int]bool{}
 		client  = &http.Client{Timeout: 20 * time.Second}
 		pace    = &pacer{delay: o.delay, min: o.delay}
 		stats   struct{ requests, cached, silent, limited, matches int }
 		blocked bool
+		starved bool
 	)
 	need := func(i int) bool {
 		for len(got) <= i {
@@ -210,11 +327,10 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 			fmtTime(s.offset), fmtTime(dur), stats.requests, stats.cached, stats.matches)
 	}
 
-	query := func(i int) *ShazamTrack {
-		if done[i] || blocked || ctx.Err() != nil {
-			return results[i]
+	query := func(s sample) *ShazamTrack {
+		if done[s.offset] || blocked || ctx.Err() != nil {
+			return results[s.offset]
 		}
-		s := got[i]
 		var t *ShazamTrack
 		status := "—"
 		if c, ok := cache.hits[s.offset]; ok {
@@ -223,12 +339,15 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 		} else if s.peaks < silentPeaks {
 			status = fmt.Sprintf("— (near-silent, %d peaks, not sent)", s.peaks)
 			stats.silent++
+		} else if s.sig == nil {
+			starved, blocked = true, true
+			return nil
 		} else {
 			var err error
 			for consecutive := 1; ; consecutive++ {
 				pace.wait(ctx)
 				stats.requests++
-				t, err = Recognize(ctx, client, s.sig, s.n)
+				t, err = recognize(ctx, client, s.sig, s.n)
 				var rl rateLimitedError
 				if !errors.As(err, &rl) {
 					break
@@ -262,7 +381,7 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 			stats.matches++
 			onMatch(t.Subtitle, t.Title)
 		}
-		done[i], results[i] = true, t
+		done[s.offset], results[s.offset] = true, t
 		progress(s, status)
 		return t
 	}
@@ -272,11 +391,11 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 	}
 	var refine func(a, b int)
 	refine = func(a, b int) {
-		if b-a <= 1 || blocked || ctx.Err() != nil || same(results[a], results[b]) {
+		if b-a <= 1 || blocked || ctx.Err() != nil || same(results[got[a].offset], results[got[b].offset]) {
 			return // same track on both ends: assume it plays throughout
 		}
 		m := (a + b) / 2
-		query(m)
+		query(got[m])
 		refine(a, m)
 		refine(m, b)
 	}
@@ -287,7 +406,7 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 	}
 	prev := -1
 	for c := 0; need(c); c += step {
-		query(c)
+		query(got[c])
 		if prev >= 0 {
 			refine(prev, c)
 		}
@@ -298,32 +417,91 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 	}
 	if !blocked && ctx.Err() == nil && len(got)-1 > prev && prev >= 0 {
 		last := len(got) - 1
-		query(last)
+		query(got[last])
 		refine(prev, last)
 	}
-	fmt.Fprintln(logOut)
-	logf("· shazam: %d requests, %d cached, %d silent skipped, %d rate limits, %d windows checked of %d",
-		stats.requests, stats.cached, stats.silent, stats.limited, len(done), len(got))
 
-	idx := make([]int, 0, len(results))
-	for i := range results {
-		idx = append(idx, i)
+	// Matches in chronological order, so merging is deterministic.
+	type hit struct {
+		at    int // window index
+		t     *ShazamTrack
+		extra []int // offsets of in-between windows that heard it too
+		weak  bool
 	}
-	sort.Ints(idx) // chronological, so merging is deterministic
+	var hits []*hit
+	for i, s := range got {
+		if t := results[s.offset]; t != nil {
+			hits = append(hits, &hit{at: i, t: t})
+		}
+	}
+
+	// A track heard in a single window is as often a stray match as a real
+	// one. Listen again half an interval before and after: heard again, it
+	// counts twice; not heard, it is kept but marked as unconfirmed.
+	var verify struct{ checked, confirmed, weak int }
+	for _, h := range hits {
+		lone := true
+		for _, x := range hits {
+			if x != h && same(x.t, h.t) {
+				lone = false
+				break
+			}
+		}
+		if !lone || blocked || ctx.Err() != nil {
+			continue
+		}
+		var checks []sample
+		if a := got[h.at].alt; a != nil {
+			checks = append(checks, *a)
+		}
+		if h.at > 0 && got[h.at-1].alt != nil {
+			checks = append(checks, *got[h.at-1].alt)
+		}
+		if len(checks) == 0 {
+			continue
+		}
+		verify.checked++
+		conclusive := true
+		for _, a := range checks {
+			if same(query(a), h.t) {
+				h.extra = append(h.extra, a.offset)
+				break
+			}
+			conclusive = conclusive && done[a.offset]
+		}
+		switch {
+		case len(h.extra) > 0:
+			verify.confirmed++
+		case conclusive:
+			h.weak = true
+			verify.weak++
+		}
+	}
+
+	fmt.Fprint(logOut, "\r\033[K")
+	if starved {
+		return nil, nil, errNeedAudio
+	}
+	logf("· shazam: %d requests, %d cached, %d silent skipped, %d rate limits, %d samples checked in %d windows",
+		stats.requests, stats.cached, stats.silent, stats.limited, len(done), len(got))
+	if verify.checked > 0 {
+		logf("· single matches listened to again: %d confirmed, %d not (kept as low confidence)", verify.confirmed, verify.weak)
+	}
+
 	var out []Candidate
-	for _, i := range idx {
-		if t := results[i]; t != nil {
-			out = append(out, Candidate{Artist: t.Subtitle, Title: t.Title, TimeSec: got[i].offset, Source: "shazam", URL: t.URL})
+	for _, h := range hits {
+		c := Candidate{Artist: h.t.Subtitle, Title: h.t.Title, TimeSec: got[h.at].offset, Source: "shazam", URL: h.t.URL, Weak: h.weak}
+		out = append(out, c)
+		for _, off := range h.extra {
+			c.TimeSec = off
+			out = append(out, c)
 		}
 	}
 	switch {
 	case blocked:
-		return out, errShazamBlocked
+		return out, nil, errShazamBlocked
 	case ctx.Err() != nil:
-		return out, ctx.Err()
+		return out, nil, ctx.Err()
 	}
-	if err := <-decodeErr; err != nil {
-		return out, fmt.Errorf("ffmpeg: %w", err)
-	}
-	return out, nil
+	return out, got, nil
 }

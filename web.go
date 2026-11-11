@@ -166,11 +166,8 @@ func (s *server) worker(ctx context.Context) {
 	for {
 		s.mu.Lock()
 		var next *job
-		for _, j := range s.jobs {
-			if j.State == stateQueued {
-				next = j
-				break
-			}
+		if q := s.queuedLocked(); len(q) > 0 {
+			next = q[0]
 		}
 		if next == nil {
 			s.mu.Unlock()
@@ -336,18 +333,33 @@ func (s *server) pruneLocked() {
 	s.jobs = kept
 }
 
+// queuedLocked lists the waiting jobs in the order they will run. Retries
+// take seconds, so they go ahead of full lookups.
+func (s *server) queuedLocked() []*job {
+	var retries, rest []*job
+	for _, j := range s.jobs {
+		switch {
+		case j.State != stateQueued:
+		case j.Req.Retry != nil:
+			retries = append(retries, j)
+		default:
+			rest = append(rest, j)
+		}
+	}
+	return append(retries, rest...)
+}
+
 // snapshotLocked copies the public job fields and numbers the queue.
 func (s *server) snapshotLocked() []job {
+	pos := map[*job]int{}
+	for i, j := range s.queuedLocked() {
+		pos[j] = i + 1
+	}
 	out := make([]job, 0, len(s.jobs))
-	pos := 0
 	for _, j := range s.jobs {
 		c := *j
 		c.log, c.result, c.cancel, c.owner = nil, nil, nil, ""
-		c.Position = 0
-		if j.State == stateQueued {
-			pos++
-			c.Position = pos
-		}
+		c.Position = pos[j]
 		out = append(out, c)
 	}
 	return out

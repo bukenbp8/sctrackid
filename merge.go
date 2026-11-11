@@ -14,12 +14,14 @@ type Entry struct {
 	ShazamURL  string         `json:"shazam_url,omitempty"`
 	Confidence string         `json:"confidence"`
 	Links      *Links         `json:"links,omitempty"`
-	Approved   bool           `json:"approved,omitempty"` // a user confirmed this is the right track
-	Rejected   []TrackName    `json:"rejected,omitempty"` // what was listed here before a retry replaced it
+	Unverified bool           `json:"unverified,omitempty"` // a single Shazam hit that a second listen did not confirm
+	Approved   bool           `json:"approved,omitempty"`   // a user confirmed this is the right track
+	Rejected   []TrackName    `json:"rejected,omitempty"`   // what was listed here before a retry replaced it
 
 	order    int
 	times    map[string][]int
 	variants map[string]int
+	weak     bool
 }
 
 // TrackName is a bare artist/title pair.
@@ -89,6 +91,7 @@ func Merge(cands []Candidate) []*Entry {
 			entries = append(entries, e)
 		}
 		e.Sources[c.Source]++
+		e.weak = e.weak || c.Weak
 		if c.URL != "" && e.ShazamURL == "" {
 			e.ShazamURL = c.URL
 		}
@@ -121,6 +124,9 @@ func Merge(cands []Candidate) []*Entry {
 			e.TimeSec = ts[len(ts)/2]
 		}
 		e.Confidence = confidence(e.Sources)
+		if e.weak && e.Confidence == "medium" { // nothing but one unconfirmed Shazam hit
+			e.Confidence, e.Unverified = "low", true
+		}
 	}
 
 	sortEntries(entries)

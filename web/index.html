@@ -331,7 +331,7 @@ function renderQueue() {
   // running first, then queued in order, then finished newest first
   const order = { running: 0, queued: 1 };
   const jobs = [...S.jobs].sort((a, b) =>
-    (order[a.state] ?? 2) - (order[b.state] ?? 2) || ((order[a.state] ?? 2) === 2 ? b.id - a.id : a.id - b.id));
+    (order[a.state] ?? 2) - (order[b.state] ?? 2) || ((order[a.state] ?? 2) === 2 ? b.id - a.id : (a.position || 0) - (b.position || 0)));
   if (!jobs.length) {
     q.innerHTML = `<div class="empty">no jobs in memory<br><b>&gt;</b> paste a soundcloud link above</div>`;
   } else {
@@ -464,7 +464,7 @@ function renderDetail() {
           <td class="n">${i + 1}</td><td class="tm">${fmt(t.time_sec)}</td>
           <td class="tr"><span class="a">${esc(t.artist)}</span> — <span class="ti">${esc(t.title)}</span>
             ${was.length ? `<div class="was">corrected · not <s>${was.map(esc).join("</s>, <s>")}</s></div>` : ""}</td>
-          <td><span class="conf ${t.approved ? "high" : esc(t.confidence)}" title="${t.approved ? "confirmed by a user" : esc(t.confidence)}"><i></i><i></i><i></i></span></td>
+          <td><span class="conf ${t.approved ? "high" : esc(t.confidence)}" title="${t.approved ? "confirmed by a user" : t.unverified ? "low — a single Shazam match that a second listen did not confirm" : esc(t.confidence)}"><i></i><i></i><i></i></span></td>
           <td>${src}</td><td class="lnk">${links}</td>${verify}</tr>`;
       }).join("") + `</tbody></table>`;
     html += `</div>`;
