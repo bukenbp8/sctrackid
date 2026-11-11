@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCTRACKID // netrunner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #05040a;
+  --bg2: #0c0a16;
+  --panel: rgba(14, 11, 26, .86);
+  --line: #2a2440;
+  --cyan: #00f0ff;
+  --mag: #ff2a6d;
+  --yel: #f3e600;
+  --grn: #39ff88;
+  --dim: #7a7396;
+  --txt: #d9d4f0;
+  --mono: "Share Tech Mono", ui-monospace, "JetBrains Mono", monospace;
+  --disp: "Orbitron", "Share Tech Mono", sans-serif;
+  --cut: 14px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--txt);
+  font: 15px/1.5 var(--mono);
+  overflow-x: hidden;
+}
+/* perspective grid floor + glow */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -2; pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(255, 42, 109, .22), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(0, 240, 255, .12), transparent 60%),
+    linear-gradient(transparent 0 calc(100% - 1px), rgba(0, 240, 255, .07) 0) 0 0 / 100% 42px,
+    linear-gradient(90deg, transparent 0 calc(100% - 1px), rgba(0, 240, 255, .07) 0) 0 0 / 42px 100%,
+    var(--bg);
+}
+/* scanlines */
+body::after {
+  content: ""; position: fixed; inset: 0; z-index: 100; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px);
+  mix-blend-mode: multiply;
+  animation: flicker 6s infinite steps(1);
+}
+@keyframes flicker { 0%, 97%, 100% { opacity: 1 } 98% { opacity: .75 } 99% { opacity: .9 } }
+
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-shadow: 0 0 8px var(--cyan); }
+
+.wrap { max-width: 1400px; margin: 0 auto; padding: 22px 16px 60px; }
+
+/* ---------- header ---------- */
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+.logo { margin: 0; font: 900 clamp(30px, 6vw, 56px)/1 var(--disp); letter-spacing: .06em; color: #fff; position: relative;
+  text-shadow: 0 0 18px rgba(255, 42, 109, .6); }
+.logo span { color: var(--yel); text-shadow: 0 0 18px rgba(243, 230, 0, .5); }
+.glitch::before, .glitch::after { content: attr(data-text); position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.glitch::before { color: var(--cyan); transform: translate(-3px, 0); clip-path: inset(0 0 65% 0); animation: g1 3.2s infinite linear alternate-reverse; opacity: .8; }
+.glitch::after { color: var(--mag); transform: translate(3px, 0); clip-path: inset(60% 0 0 0); animation: g2 2.7s infinite linear alternate-reverse; opacity: .8; }
+@keyframes g1 { 0%,88% { clip-path: inset(0 0 100% 0) } 90% { clip-path: inset(10% 0 60% 0) } 94% { clip-path: inset(50% 0 20% 0) } 100% { clip-path: inset(0 0 85% 0) } }
+@keyframes g2 { 0%,85% { clip-path: inset(100% 0 0 0) } 88% { clip-path: inset(70% 0 5% 0) } 93% { clip-path: inset(30% 0 45% 0) } 100% { clip-path: inset(85% 0 0 0) } }
+.sub { color: var(--dim); font-size: 13px; letter-spacing: .25em; text-transform: uppercase; margin-top: 8px; }
+.sub b { color: var(--mag); font-weight: normal; }
+.hud { display: flex; gap: 10px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--line); padding: 6px 12px; font-size: 12px; letter-spacing: .15em; text-transform: uppercase; background: var(--panel);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px); }
+.chip b { color: var(--cyan); font-weight: normal; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); margin-right: 7px; vertical-align: 1px; }
+.dot.on { background: var(--grn); box-shadow: 0 0 10px var(--grn); }
+.dot.busy { background: var(--yel); box-shadow: 0 0 10px var(--yel); animation: pulse 1s infinite; }
+.dot.off { background: var(--mag); box-shadow: 0 0 10px var(--mag); }
+@keyframes pulse { 50% { opacity: .3 } }
+
+/* ---------- panels ---------- */
+.panel { position: relative; background: var(--panel); border: 1px solid var(--line); padding: 18px;
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  backdrop-filter: blur(3px); }
+.panel::before { content: ""; position: absolute; left: 0; top: 0; width: 60px; height: 2px; background: var(--mag); box-shadow: 0 0 12px var(--mag); }
+.panel.cy::before { background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
+.ptitle { margin: 0 0 14px; font: 700 12px var(--disp); letter-spacing: .3em; text-transform: uppercase; color: var(--dim); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.ptitle i { font-style: normal; color: var(--mag); }
+
+/* ---------- command bar ---------- */
+form.cmd { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
+.prompt { display: flex; align-items: center; border: 1px solid var(--cyan); background: rgba(0, 240, 255, .04); box-shadow: inset 0 0 18px rgba(0, 240, 255, .08), 0 0 14px rgba(0, 240, 255, .12); }
+.prompt label { padding: 0 10px 0 14px; color: var(--mag); white-space: nowrap; }
+.prompt input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: #fff; font: 16px var(--mono); padding: 14px 14px 14px 0; caret-color: var(--yel); }
+.prompt input::placeholder { color: #4d4766; }
+.btn { font: 700 13px var(--disp); letter-spacing: .2em; text-transform: uppercase; cursor: pointer; border: 0; padding: 0 26px; min-height: 46px;
+  background: var(--yel); color: #000; position: relative;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px)); transition: filter .15s, transform .1s; }
+.btn:hover { filter: drop-shadow(0 0 0 #fff) brightness(1.15); box-shadow: 0 0 22px var(--yel); }
+.btn:active { transform: translate(1px, 1px); }
+.btn:disabled { opacity: .5; cursor: wait; }
+.btn.ghost { background: transparent; color: var(--cyan); border: 1px solid var(--cyan); min-height: 34px; padding: 0 14px; font-size: 11px; clip-path: none; }
+.btn.ghost:hover { background: rgba(0, 240, 255, .12); box-shadow: 0 0 14px rgba(0, 240, 255, .4); }
+.btn.ghost.red { color: var(--mag); border-color: var(--mag); }
+.btn.ghost.red:hover { background: rgba(255, 42, 109, .12); box-shadow: 0 0 14px rgba(255, 42, 109, .4); }
+.opts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--dim); align-items: center; }
+.opts label { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 7px; }
+.opts input[type=checkbox] { appearance: none; width: 14px; height: 14px; border: 1px solid var(--dim); margin: 0; display: grid; place-items: center; cursor: pointer; }
+.opts input[type=checkbox]:checked { border-color: var(--cyan); background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+.opts input:checked + span { color: var(--txt); }
+.opts select { background: var(--bg2); color: var(--txt); border: 1px solid var(--line); font: 13px var(--mono); padding: 3px 6px; }
+.msg { grid-column: 1 / -1; min-height: 1.5em; font-size: 13px; margin-top: -4px; }
+.msg.err { color: var(--mag); } .msg.ok { color: var(--grn); }
+
+/* ---------- layout ---------- */
+.grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 18px; margin-top: 18px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } form.cmd { grid-template-columns: 1fr; } .btn { width: 100%; } }
+
+/* ---------- queue ---------- */
+.queue { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; padding-right: 2px; }
+.queue::-webkit-scrollbar, .term::-webkit-scrollbar { width: 6px; }
+.queue::-webkit-scrollbar-thumb, .term::-webkit-scrollbar-thumb { background: var(--line); }
+.qi { border: 1px solid var(--line); border-left: 3px solid var(--dim); padding: 10px 12px; cursor: pointer; background: rgba(5, 4, 10, .6); transition: background .15s, border-color .15s; }
+.qi:hover { background: rgba(0, 240, 255, .05); }
+.qi.sel { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan) inset, 0 0 18px rgba(0, 240, 255, .18); }
+.qi.running { border-left-color: var(--yel); }
+.qi.queued { border-left-color: var(--cyan); }
+.qi.done { border-left-color: var(--grn); }
+.qi.failed, .qi.canceled { border-left-color: var(--mag); }
+.qi .t { color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qi .m { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--dim); margin-top: 4px; }
+.qi .bar { height: 2px; background: var(--line); margin-top: 8px; overflow: hidden; }
+.qi .bar i { display: block; height: 100%; background: var(--yel); box-shadow: 0 0 8px var(--yel); transition: width .4s; }
+.badge { font: 700 10px var(--disp); letter-spacing: .15em; text-transform: uppercase; padding: 2px 7px; border: 1px solid currentColor; white-space: nowrap; }
+.badge.running { color: var(--yel); animation: pulse 1.4s infinite; }
+.badge.queued { color: var(--cyan); }
+.badge.done { color: var(--grn); }
+.badge.failed, .badge.canceled { color: var(--mag); }
+.empty { color: var(--dim); font-size: 13px; padding: 18px 4px; text-align: center; letter-spacing: .1em; }
+.empty b { color: var(--mag); font-weight: normal; }
+
+/* ---------- detail ---------- */
+.dhead { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.dhead h2 { margin: 0; font: 700 clamp(18px, 2.4vw, 26px)/1.25 var(--disp); color: #fff; letter-spacing: .03em; word-break: break-word;
+  text-shadow: 0 0 14px rgba(0, 240, 255, .35); }
+.dmeta { color: var(--dim); font-size: 13px; margin-top: 6px; }
+.dmeta b { color: var(--txt); font-weight: normal; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.prog { margin: 18px 0 6px; }
+.prog .track { height: 10px; border: 1px solid var(--line); background: repeating-linear-gradient(90deg, transparent 0 9px, rgba(255,255,255,.04) 9px 10px); position: relative; overflow: hidden; }
+.prog .fill { height: 100%; background: linear-gradient(90deg, var(--mag), var(--yel)); box-shadow: 0 0 14px var(--mag); transition: width .5s; }
+.prog .fill.indet { width: 30% !important; animation: scan 1.6s infinite ease-in-out; }
+@keyframes scan { 0% { transform: translateX(-100%) } 100% { transform: translateX(340%) } }
+.prog .ptxt { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--dim); margin-top: 6px; }
+.prog .ptxt span:first-child { color: var(--yel); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.sect { margin-top: 22px; }
+.sect h3 { margin: 0 0 10px; font: 700 11px var(--disp); letter-spacing: .3em; text-transform: uppercase; color: var(--mag); display: flex; align-items: center; gap: 10px; }
+.sect h3::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--line), transparent); }
+
+.term { background: #020203; border: 1px solid var(--line); padding: 10px 12px; height: 260px; overflow-y: auto; font-size: 12.5px; line-height: 1.55; color: #9ef7c8; white-space: pre-wrap; word-break: break-word; }
+.term .w { color: var(--mag); }
+.term .i { color: #8ec9d6; }
+.term .cur { display: inline-block; width: 8px; height: 1em; background: var(--grn); vertical-align: -2px; animation: pulse 1s infinite steps(1); }
+details > summary { cursor: pointer; list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] .caret { transform: rotate(90deg); }
+.caret { display: inline-block; transition: transform .15s; color: var(--cyan); }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { font: 700 10px var(--disp); letter-spacing: .2em; text-transform: uppercase; color: var(--dim); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+td { padding: 8px; border-bottom: 1px solid rgba(42, 36, 64, .55); vertical-align: top; }
+tr { animation: rowin .35s both; }
+tr:hover td { background: rgba(0, 240, 255, .04); }
+@keyframes rowin { from { opacity: 0; transform: translateX(-8px) } }
+td.n { color: var(--dim); width: 32px; text-align: right; }
+td.tm { color: var(--cyan); width: 72px; white-space: nowrap; }
+td.tr .a { color: #fff; }
+td.tr .ti { color: var(--txt); opacity: .85; }
+.conf { display: inline-flex; gap: 2px; vertical-align: middle; }
+.conf i { width: 7px; height: 12px; background: var(--line); transform: skewX(-20deg); }
+.conf.high i { background: var(--grn); box-shadow: 0 0 6px var(--grn); }
+.conf.medium i:nth-child(-n+2) { background: var(--yel); box-shadow: 0 0 6px var(--yel); }
+.conf.low i:first-child { background: var(--mag); box-shadow: 0 0 6px var(--mag); }
+.src { display: inline-block; font-size: 11px; padding: 0 6px; margin: 0 4px 3px 0; border: 1px solid var(--line); color: var(--dim); }
+.src.shazam { color: var(--cyan); border-color: rgba(0, 240, 255, .4); }
+.src.description { color: var(--yel); border-color: rgba(243, 230, 0, .35); }
+.src.comment { color: var(--mag); border-color: rgba(255, 42, 109, .4); }
+.lnk { white-space: nowrap; font-size: 13px; }
+.lnk a + a { margin-left: 10px; }
+.lnk .yt { color: var(--mag); }
+@media (max-width: 640px) {
+  table, tbody, tr, td { display: block; width: 100% !important; }
+  thead { display: none; }
+  tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+  td { border: 0; padding: 2px 4px; text-align: left !important; }
+  td.n { display: none; }
+}
+.note { border: 1px dashed var(--line); padding: 10px 12px; font-size: 13px; color: var(--dim); }
+.note b { color: var(--yel); font-weight: normal; }
+.errbox { border: 1px solid var(--mag); background: rgba(255, 42, 109, .08); color: #ffb3c8; padding: 10px 12px; margin-top: 16px; font-size: 13px; }
+
+.idle { min-height: 360px; display: grid; place-items: center; text-align: center; color: var(--dim); }
+.idle .big { font: 900 clamp(40px, 8vw, 90px)/1 var(--disp); color: transparent; -webkit-text-stroke: 1px rgba(0, 240, 255, .35); letter-spacing: .08em; }
+.idle p { letter-spacing: .2em; text-transform: uppercase; font-size: 12px; }
+
+.toast { position: fixed; right: 16px; bottom: 16px; z-index: 50; max-width: min(420px, calc(100vw - 32px)); padding: 12px 16px; border: 1px solid var(--cyan); background: var(--bg2); color: var(--txt); font-size: 13px;
+  box-shadow: 0 0 22px rgba(0, 240, 255, .25); transform: translateY(140%); transition: transform .25s; }
+.toast.show { transform: none; }
+.toast.err { border-color: var(--mag); box-shadow: 0 0 22px rgba(255, 42, 109, .3); }
+footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em; text-align: center; text-transform: uppercase; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 class="logo glitch" data-text="SCTRACKID">SC<span>TRACK</span>ID</h1>
+      <div class="sub"><b>//</b> soundcloud set decryption terminal <b>v2.077</b></div>
+    </div>
+    <div class="hud">
+      <div class="chip"><span id="linkDot" class="dot"></span><span id="linkTxt">connecting</span></div>
+      <div class="chip">worker <b id="workerTxt">idle</b></div>
+      <div class="chip">queue <b id="queueTxt">0</b></div>
+      <div class="chip"><b id="clock">--:--:--</b></div>
+    </div>
+  </header>
+
+  <section class="panel cy">
+    <h2 class="ptitle"><span><i>01</i> // inject target</span></h2>
+    <form class="cmd" id="form" autocomplete="off">
+      <div class="prompt">
+        <label for="url">root@sctrackid:~$</label>
+        <input id="url" name="url" placeholder="https://soundcloud.com/artist/set" required spellcheck="false">
+      </div>
+      <button class="btn" id="go" type="submit">Jack in</button>
+      <div class="opts">
+        <label><input type="checkbox" id="thorough"><span>thorough scan</span></label>
+        <label><input type="checkbox" id="no_audio"><span>skip audio</span></label>
+        <label><input type="checkbox" id="no_comments"><span>skip comments</span></label>
+        <label><input type="checkbox" id="no_1001"><span>skip 1001tracklists</span></label>
+        <label><input type="checkbox" id="no_links"><span>skip links</span></label>
+        <label>min confidence
+          <select id="min_confidence"><option>low</option><option>medium</option><option>high</option></select>
+        </label>
+      </div>
+      <div class="msg" id="msg"></div>
+    </form>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2 class="ptitle"><span><i>02</i> // job queue</span><span id="qcount"></span></h2>
+      <div class="queue" id="queue"></div>
+    </section>
+    <section class="panel cy" id="detail"></section>
+  </div>
+  <footer>one job at a time · others wait their turn · shazam × comments × 1001tracklists</footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const S = { jobs: [], sel: null, detail: null, log: [] };
+
+const fmt = (sec) => {
+  if (sec == null || sec < 0) return "?";
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+};
+const parseT = (t) => t.split(":").reduce((a, x) => a * 60 + +x, 0);
+const elapsed = (j) => {
+  if (!j.started) return "";
+  const end = j.finished ? new Date(j.finished) : new Date();
+  return fmt(Math.max(0, Math.round((end - new Date(j.started)) / 1000)));
+};
+// "fingerprinting at 12:30 / 1:02:00 — …" -> 0.2
+const progFrac = (j) => {
+  const m = /at (\d[\d:]*) \/ (\d[\d:]*)/.exec(j.progress || "");
+  if (!m) return null;
+  const a = parseT(m[1]), b = parseT(m[2]);
+  return b > 0 ? Math.min(1, a / b) : null;
+};
+const label = (j) => j.title || j.request.url.replace(/^https?:\/\/(www\.|m\.)?soundcloud\.com\//, "");
+const badge = (j) => `<span class="badge ${j.state}">${j.state === "queued" ? "queued #" + j.position : j.state}</span>`;
+
+let toastT;
+function toast(text, err) {
+  const t = $("#toast");
+  t.textContent = text; t.className = "toast show" + (err ? " err" : "");
+  clearTimeout(toastT); toastT = setTimeout(() => (t.className = "toast"), 3500);
+}
+
+// ---------- queue ----------
+function renderQueue() {
+  const q = $("#queue");
+  // running first, then queued in order, then finished newest first
+  const order = { running: 0, queued: 1 };
+  const jobs = [...S.jobs].sort((a, b) =>
+    (order[a.state] ?? 2) - (order[b.state] ?? 2) || ((order[a.state] ?? 2) === 2 ? b.id - a.id : a.id - b.id));
+  if (!jobs.length) {
+    q.innerHTML = `<div class="empty">no jobs in memory<br><b>&gt;</b> paste a soundcloud link above</div>`;
+  } else {
+    q.innerHTML = jobs.map((j) => {
+      const f = progFrac(j);
+      const right = j.state === "running" ? elapsed(j)
+        : j.state === "done" ? `${j.track_count} tracks` : j.state === "queued" ? "waiting" : "";
+      return `<div class="qi ${j.state}${j.id === S.sel ? " sel" : ""}" data-id="${j.id}">
+        <div class="t">${esc(label(j))}</div>
+        <div class="m"><span>#${j.id} ${badge(j)}</span><span>${esc(right)}</span></div>
+        ${j.state === "running" ? `<div class="bar"><i style="width:${f == null ? 4 : (f * 100).toFixed(1)}%"></i></div>` : ""}
+      </div>`;
+    }).join("");
+  }
+  const running = S.jobs.find((j) => j.state === "running");
+  const queued = S.jobs.filter((j) => j.state === "queued").length;
+  $("#workerTxt").textContent = running ? "busy #" + running.id : "idle";
+  $("#workerTxt").style.color = running ? "var(--yel)" : "";
+  $("#queueTxt").textContent = queued;
+  $("#qcount").textContent = `${S.jobs.length} total`;
+}
+$("#queue").addEventListener("click", (e) => {
+  const el = e.target.closest(".qi");
+  if (el) select(+el.dataset.id);
+});
+
+// ---------- detail ----------
+async function select(id) {
+  S.sel = id; S.detail = null; S.log = [];
+  renderQueue(); renderDetail();
+  if (id == null) return;
+  try {
+    const r = await fetch(`/api/jobs/${id}`);
+    if (!r.ok) throw new Error((await r.json()).error);
+    const d = await r.json();
+    if (S.sel !== id) return;
+    S.detail = d; S.log = d.log || [];
+    renderDetail();
+  } catch (e) { toast("fetch failed: " + e.message, true); }
+}
+
+const lineClass = (l) => (l.startsWith("!") ? "w" : l.startsWith("·") ? "i" : "");
+function termHTML(lines, live) {
+  return lines.map((l) => `<span class="${lineClass(l)}">${esc(l)}</span>`).join("\n") + (live ? `\n<span class="cur"></span>` : "");
+}
+
+function renderDetail() {
+  const el = $("#detail");
+  const j = S.jobs.find((x) => x.id === S.sel);
+  if (!j) {
+    el.innerHTML = `<div class="idle"><div><div class="big">NO&nbsp;SIGNAL</div><p>select a job or inject a target</p></div></div>`;
+    return;
+  }
+  const live = j.state === "running";
+  const res = S.detail && S.detail.result;
+  const f = progFrac(j);
+  const sc = res ? res.url : j.request.url;
+  const meta = [
+    j.uploader ? `<b>${esc(j.uploader)}</b>` : "",
+    j.duration_sec ? fmt(j.duration_sec) : "",
+    j.started ? `runtime ${elapsed(j)}` : "",
+    j.file ? `saved → <b>${esc(j.file)}</b>` : "",
+  ].filter(Boolean).join(" · ");
+
+  let html = `<div class="dhead">
+    <div style="min-width:0;flex:1">
+      <h2 class="ptitle" style="margin-bottom:8px"><span><i>03</i> // job #${j.id}</span>${badge(j)}</h2>
+      <h2>${esc(label(j))}</h2>
+      <div class="dmeta">${meta || esc(j.request.url)}</div>
+    </div>
+    <div class="actions">
+      <a class="btn ghost" href="${esc(sc)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center">open ↗</a>
+      ${res ? `<a class="btn ghost" href="/api/jobs/${j.id}/txt" style="display:inline-flex;align-items:center">.txt ↓</a>
+               <button class="btn ghost" data-act="copy">copy</button>` : ""}
+      ${j.state === "running" ? `<button class="btn ghost red" data-act="cancel">abort</button>`
+        : j.state === "queued" ? `<button class="btn ghost red" data-act="cancel">dequeue</button>`
+        : `<button class="btn ghost red" data-act="cancel">purge</button>`}
+    </div>
+  </div>`;
+
+  if (live || j.state === "queued") {
+    const pct = f == null ? 0 : f * 100;
+    html += `<div class="prog">
+      <div class="track"><div class="fill ${j.state === "queued" || f == null ? "indet" : ""}" style="width:${pct.toFixed(1)}%"></div></div>
+      <div class="ptxt"><span id="ptxt">${esc(j.state === "queued" ? `waiting in queue — position ${j.position}` : j.progress || "initializing…")}</span>
+      <span>${f == null ? "" : pct.toFixed(0) + "%"}</span></div></div>`;
+  }
+  if (j.error) html += `<div class="errbox">⚠ ${esc(j.error)}</div>`;
+
+  if (res) {
+    const tracks = res.tracks || [];
+    html += `<div class="sect"><h3>decoded tracklist · ${tracks.length}</h3>`;
+    if (!tracks.length) html += `<div class="note">no tracks identified.</div>`;
+    else html += `<table><thead><tr><th>#</th><th>time</th><th>track</th><th>conf</th><th>sources</th><th>listen</th></tr></thead><tbody>` +
+      tracks.map((t, i) => {
+        const L = t.links || {};
+        const src = Object.entries(t.sources || {}).map(([k, n]) => `<span class="src ${esc(k)}">${esc(k === "description" ? "desc" : k)}${n > 1 ? "×" + n : ""}</span>`).join("");
+        const links = [
+          L.youtube ? `<a class="yt" href="${esc(L.youtube)}" target="_blank" rel="noopener" title="${esc(L.youtube_title || "")}">▶ yt</a>`
+            : L.youtube_search ? `<a href="${esc(L.youtube_search)}" target="_blank" rel="noopener">yt?</a>` : "",
+          L.bandcamp_search ? `<a href="${esc(L.bandcamp_search)}" target="_blank" rel="noopener">bc?</a>` : "",
+          L.spotify_search ? `<a href="${esc(L.spotify_search)}" target="_blank" rel="noopener">sp?</a>` : "",
+          t.shazam_url ? `<a href="${esc(t.shazam_url)}" target="_blank" rel="noopener">shz</a>` : "",
+        ].filter(Boolean).join("");
+        return `<tr style="animation-delay:${Math.min(i, 40) * 25}ms">
+          <td class="n">${i + 1}</td><td class="tm">${fmt(t.time_sec)}</td>
+          <td class="tr"><span class="a">${esc(t.artist)}</span> — <span class="ti">${esc(t.title)}</span></td>
+          <td><span class="conf ${esc(t.confidence)}" title="${esc(t.confidence)}"><i></i><i></i><i></i></span></td>
+          <td>${src}</td><td class="lnk">${links}</td></tr>`;
+      }).join("") + `</tbody></table>`;
+    html += `</div>`;
+    const asks = res.unresolved_id_asks || [];
+    if (asks.length) html += `<div class="sect"><h3>unidentified · listeners asked</h3><div class="note">${asks.map((a) => `<b>${fmt(a.time_sec)}</b> ×${a.count}`).join(" &nbsp;·&nbsp; ")}</div></div>`;
+    const tl = res.tracklists1001;
+    if (tl) html += `<div class="sect"><h3>1001tracklists match</h3><div class="note"><a href="${esc(tl.url)}" target="_blank" rel="noopener">${esc(tl.title)}</a>
+      ${[tl.date, tl.play_time, tl.ided ? tl.ided + " IDed" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>`;
+  }
+
+  if (j.state !== "queued") {
+    html += `<details class="sect" ${live || !res ? "open" : ""}><summary><h3><span class="caret">▸</span> system log · ${S.log.length} lines</h3></summary>
+      <div class="term" id="term">${termHTML(S.log, live)}</div></details>`;
+  }
+  el.innerHTML = html;
+  const term = $("#term");
+  if (term) term.scrollTop = term.scrollHeight;
+}
+
+$("#detail").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const j = S.jobs.find((x) => x.id === S.sel);
+  if (!j) return;
+  if (b.dataset.act === "cancel") {
+    if (j.state === "running" && !confirm("Abort the running job? Partial results are kept.")) return;
+    const r = await fetch(`/api/jobs/${j.id}`, { method: "DELETE" });
+    if (!r.ok) return toast("failed", true);
+    if (j.state !== "running") { toast(`job #${j.id} ${j.state === "queued" ? "dequeued" : "purged"}`); select(null); }
+  } else if (b.dataset.act === "copy") {
+    const r = await fetch(`/api/jobs/${j.id}/txt`);
+    try { await navigator.clipboard.writeText(await r.text()); toast("tracklist copied to clipboard"); }
+    catch { toast("clipboard blocked", true); }
+  }
+});
+
+function appendLog(id, text) {
+  if (id !== S.sel) return;
+  S.log.push(text);
+  const term = $("#term");
+  if (!term) return;
+  const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+  const cur = term.querySelector(".cur");
+  const span = document.createElement("span");
+  span.className = lineClass(text); span.textContent = text;
+  term.insertBefore(document.createTextNode(term.childNodes.length > 1 ? "\n" : ""), cur);
+  term.insertBefore(span, cur);
+  if (atBottom) term.scrollTop = term.scrollHeight;
+  const h = term.parentElement.querySelector("summary h3");
+  if (h) h.lastChild.textContent = ` system log · ${S.log.length} lines`;
+}
+
+function updateProgress(id, text) {
+  const j = S.jobs.find((x) => x.id === id);
+  if (!j) return;
+  j.progress = text;
+  renderQueue();
+  if (id !== S.sel) return;
+  const p = $("#ptxt"), fill = document.querySelector(".prog .fill");
+  if (!p || !fill) return renderDetail();
+  p.textContent = text;
+  const f = progFrac(j);
+  if (f != null) {
+    fill.classList.remove("indet"); fill.style.width = (f * 100).toFixed(1) + "%";
+    p.nextElementSibling.textContent = (f * 100).toFixed(0) + "%";
+  }
+}
+
+function onJobs(jobs) {
+  const prev = new Map(S.jobs.map((j) => [j.id, j]));
+  S.jobs = jobs;
+  for (const j of jobs) {
+    const p = prev.get(j.id);
+    if (p && p.state === "running" && j.state !== "running")
+      toast(`job #${j.id} ${j.state}: ${label(j)}${j.state === "done" ? ` — ${j.track_count} tracks` : ""}`, j.state !== "done");
+  }
+  if (S.sel != null && !jobs.some((j) => j.id === S.sel)) S.sel = null;
+  if (S.sel == null) {
+    const pick = jobs.find((j) => j.state === "running") || jobs[jobs.length - 1];
+    if (pick) return select(pick.id);
+  }
+  renderQueue();
+  const cur = jobs.find((j) => j.id === S.sel), was = prev.get(S.sel);
+  // refetch details when the selected job changes phase (e.g. finished → results available)
+  if (cur && (!was || was.state !== cur.state)) select(cur.id);
+  else if (cur && was && (was.title !== cur.title || was.position !== cur.position)) renderDetail();
+}
+
+// ---------- live link ----------
+function connect() {
+  const es = new EventSource("/api/events");
+  es.onopen = () => { $("#linkDot").className = "dot on"; $("#linkTxt").textContent = "uplink"; };
+  es.onerror = () => { $("#linkDot").className = "dot off"; $("#linkTxt").textContent = "signal lost"; };
+  es.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === "jobs") onJobs(e.jobs || []);
+    else if (e.type === "log") appendLog(e.id, e.text);
+    else if (e.type === "progress") updateProgress(e.id, e.text);
+  };
+}
+connect();
+
+// ---------- submit ----------
+$("#form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = $("#msg"), go = $("#go");
+  const body = { url: $("#url").value.trim(), min_confidence: $("#min_confidence").value };
+  for (const k of ["thorough", "no_audio", "no_comments", "no_1001", "no_links"]) body[k] = $("#" + k).checked;
+  go.disabled = true; msg.className = "msg"; msg.textContent = "";
+  try {
+    const r = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    const busy = S.jobs.some((j) => j.state === "running");
+    msg.className = "msg ok";
+    msg.textContent = busy ? `> job #${d.id} queued — worker busy, it runs when the current job finishes` : `> job #${d.id} accepted — starting`;
+    $("#url").value = "";
+    const selJob = S.jobs.find((j) => j.id === S.sel);
+    if (!selJob || selJob.state !== "running") select(d.id);
+  } catch (err) {
+    msg.className = "msg err"; msg.textContent = "> rejected: " + err.message;
+  } finally { go.disabled = false; }
+});
+
+// ---------- clock / timers ----------
+setInterval(() => {
+  $("#clock").textContent = new Date().toLocaleTimeString([], { hour12: false });
+  if (S.jobs.some((j) => j.state === "running")) {
+    renderQueue();
+    const j = S.jobs.find((x) => x.id === S.sel);
+    const m = document.querySelector(".dmeta");
+    if (j && j.state === "running" && m) m.innerHTML = [j.uploader ? `<b>${esc(j.uploader)}</b>` : "", j.duration_sec ? fmt(j.duration_sec) : "", `runtime ${elapsed(j)}`].filter(Boolean).join(" · ");
+  }
+}, 1000);
+</script>
+</body>
+</html>

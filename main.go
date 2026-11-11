@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 )
@@ -33,6 +34,8 @@ type options struct {
 	noCache    bool
 	noLinks    bool
 	ytKey      string
+
+	onResolved func(t *Track, dur int) // web mode: called once the SoundCloud track is known
 }
 
 func main() {
@@ -52,26 +55,83 @@ func main() {
 	flag.BoolVar(&o.jsonOut, "json", false, "print JSON instead of a table")
 	flag.StringVar(&o.minConf, "min-confidence", "low", "hide results below this confidence: low|medium|high")
 	flag.BoolVar(&o.verbose, "v", false, "verbose: log every Shazam sample")
+	serve := flag.String("serve", "", "run the web interface on this address (e.g. localhost:8080) instead of a one-off lookup")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: %s [flags] <soundcloud-url>\n\nflags:\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [flags] <soundcloud-url>\n       %s -serve localhost:8080\n\nflags:\n", os.Args[0], os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if *serve != "" {
+		if err := serveWeb(ctx, *serve, o); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if flag.NArg() != 1 {
 		flag.Usage()
 		os.Exit(2)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	if err := run(ctx, flag.Arg(0), o); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func logf(format string, a ...any) { fmt.Fprintf(os.Stderr, format+"\n", a...) }
+// logOut receives all progress output. The web server points it at the running
+// job (only one job runs at a time, so a single global target is enough).
+var logOut = &switchWriter{w: os.Stderr}
+
+type switchWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *switchWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+func (s *switchWriter) Set(w io.Writer) {
+	s.mu.Lock()
+	s.w = w
+	s.mu.Unlock()
+}
+
+func logf(format string, a ...any) { fmt.Fprintf(logOut, format+"\n", a...) }
+
+// Report is the outcome of analyzing one SoundCloud set.
+type Report struct {
+	Track      *Track
+	Dur        int
+	Entries    []*Entry
+	Unresolved map[int]int
+	TL         *TL1001Result
+}
 
 func run(ctx context.Context, link string, o options) error {
+	rep, err := analyze(ctx, link, o)
+	if err != nil {
+		return err
+	}
+	if path, err := writeTextFile(rep); err != nil {
+		logf("! could not write text file: %v", err)
+	} else {
+		logf("· saved tracklist to %s", path)
+	}
+	if o.jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep.JSON())
+	}
+	printTable(os.Stdout, rep.Entries, rep.Unresolved, rep.TL)
+	return nil
+}
+
+func analyze(ctx context.Context, link string, o options) (*Report, error) {
 	sc := &SoundCloud{HTTP: &http.Client{Timeout: 30 * time.Second}, ClientID: o.clientID}
 	cached := false
 	if sc.ClientID == "" {
@@ -81,22 +141,25 @@ func run(ctx context.Context, link string, o options) error {
 		cached = false
 		logf("· fetching SoundCloud client_id…")
 		if err := sc.FetchClientID(ctx); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	track, err := sc.Resolve(ctx, link)
 	if errors.Is(err, errUnauthorized) && cached { // cached client_id went stale
 		logf("· cached client_id expired, fetching a new one…")
 		if err := sc.FetchClientID(ctx); err != nil {
-			return err
+			return nil, err
 		}
 		track, err = sc.Resolve(ctx, link)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dur := int(max(track.FullDuration, track.Duration) / 1000)
 	logf("· %s — %s [%s, %d comments]", track.User.Username, track.Title, fmtTime(dur), track.CommentCount)
+	if o.onResolved != nil {
+		o.onResolved(track, dur)
+	}
 
 	// Streaming links are looked up in the background while Shazam paces itself.
 	var links *LinkResolver
@@ -169,17 +232,7 @@ func run(ctx context.Context, link string, o options) error {
 		links.Save()
 		logf("· links: %d direct YouTube videos, %d YouTube search links", found, len(entries)-found)
 	}
-	unresolved := unresolvedAsks(asks, entries)
-	if path, err := writeTextFile(track, dur, entries, unresolved, tlRes); err != nil {
-		logf("! could not write text file: %v", err)
-	} else {
-		logf("· saved tracklist to %s", path)
-	}
-	if o.jsonOut {
-		return printJSON(track, entries, unresolved, tlRes)
-	}
-	printTable(os.Stdout, entries, unresolved, tlRes)
-	return nil
+	return &Report{track, dur, entries, unresolvedAsks(asks, entries), tlRes}, nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) {
@@ -289,8 +342,8 @@ func printTable(w io.Writer, entries []*Entry, unresolved map[int]int, tl *TL100
 
 var unsafeFileChars = regexp.MustCompile(`[/\\:*?"<>|\x00-\x1f]+`)
 
-// writeTextFile saves the tracklist as "<set title>.txt" in the current directory.
-func writeTextFile(t *Track, dur int, entries []*Entry, unresolved map[int]int, tl *TL1001Result) (string, error) {
+// textFileName is "<set title>.txt", made safe for the file system.
+func textFileName(t *Track) string {
 	name := strings.Join(strings.Fields(unsafeFileChars.ReplaceAllString(t.Title, " ")), " ")
 	name = strings.Trim(name, ". ")
 	if r := []rune(name); len(r) > 150 {
@@ -299,34 +352,46 @@ func writeTextFile(t *Track, dur int, entries []*Entry, unresolved map[int]int, 
 	if name == "" {
 		name = fmt.Sprintf("soundcloud-%d", t.ID)
 	}
-	path := name + ".txt"
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", t.Title)
-	fmt.Fprintf(&b, "by %s · %s\n%s\n", t.User.Username, fmtTime(dur), t.PermalinkURL)
-	fmt.Fprintf(&b, "identified %s with sctrackid\n", time.Now().Format("2006-01-02 15:04"))
-	printTable(&b, entries, unresolved, tl)
-	return path, os.WriteFile(path, []byte(b.String()), 0o644)
+	return name + ".txt"
 }
 
-func printJSON(t *Track, entries []*Entry, unresolved map[int]int, tl *TL1001Result) error {
+func (r *Report) Text() string {
+	t := r.Track
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", t.Title)
+	fmt.Fprintf(&b, "by %s · %s\n%s\n", t.User.Username, fmtTime(r.Dur), t.PermalinkURL)
+	fmt.Fprintf(&b, "identified %s with sctrackid\n", time.Now().Format("2006-01-02 15:04"))
+	printTable(&b, r.Entries, r.Unresolved, r.TL)
+	return b.String()
+}
+
+// writeTextFile saves the tracklist as "<set title>.txt" in the current directory.
+func writeTextFile(r *Report) (string, error) {
+	path := textFileName(r.Track)
+	return path, os.WriteFile(path, []byte(r.Text()), 0o644)
+}
+
+func (r *Report) JSON() map[string]any {
 	type ask struct {
 		TimeSec int `json:"time_sec"`
 		Count   int `json:"count"`
 	}
-	var asks []ask
-	for ts, n := range unresolved {
+	asks := []ask{}
+	for ts, n := range r.Unresolved {
 		asks = append(asks, ask{ts, n})
 	}
 	sort.Slice(asks, func(i, j int) bool { return asks[i].TimeSec < asks[j].TimeSec })
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(map[string]any{
-		"url":                t.PermalinkURL,
-		"title":              t.Title,
-		"uploader":           t.User.Username,
-		"duration_sec":       max(t.FullDuration, t.Duration) / 1000,
+	entries := r.Entries
+	if entries == nil {
+		entries = []*Entry{}
+	}
+	return map[string]any{
+		"url":                r.Track.PermalinkURL,
+		"title":              r.Track.Title,
+		"uploader":           r.Track.User.Username,
+		"duration_sec":       r.Dur,
 		"tracks":             entries,
 		"unresolved_id_asks": asks,
-		"tracklists1001":     tl,
-	})
+		"tracklists1001":     r.TL,
+	}
 }

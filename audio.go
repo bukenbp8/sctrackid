@@ -119,7 +119,7 @@ func decode(ctx context.Context, input string, o options) (<-chan sample, <-chan
 		defer close(out)
 		cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-loglevel", "error", "-i", input,
 			"-vn", "-f", "s16le", "-ac", "1", "-ar", "16000", "-")
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = logOut
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			errc <- err
@@ -204,9 +204,9 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 	}
 	progress := func(s sample, status string) {
 		if o.verbose {
-			fmt.Fprintf(os.Stderr, "\r\033[K  %8s  %s\n", fmtTime(s.offset), status)
+			fmt.Fprintf(logOut, "\r\033[K  %8s  %s\n", fmtTime(s.offset), status)
 		}
-		fmt.Fprintf(os.Stderr, "\r\033[K· fingerprinting at %s / %s — %d requests, %d cached, %d matches",
+		fmt.Fprintf(logOut, "\r\033[K· fingerprinting at %s / %s — %d requests, %d cached, %d matches",
 			fmtTime(s.offset), fmtTime(dur), stats.requests, stats.cached, stats.matches)
 	}
 
@@ -244,7 +244,7 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 				if cool == 0 {
 					cool = time.Duration(15<<(consecutive-1)) * time.Second
 				}
-				fmt.Fprintf(os.Stderr, "\r\033[K! rate limited, cooling down %s (pace now %.1fs/request)…", cool, pace.delay.Seconds())
+				fmt.Fprintf(logOut, "\r\033[K! rate limited, cooling down %s (pace now %.1fs/request)…", cool, pace.delay.Seconds())
 				sleepCtx(ctx, cool)
 				if ctx.Err() != nil {
 					return nil
@@ -301,7 +301,7 @@ func audioCandidates(ctx context.Context, sc *SoundCloud, track *Track, dur int,
 		query(last)
 		refine(prev, last)
 	}
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(logOut)
 	logf("· shazam: %d requests, %d cached, %d silent skipped, %d rate limits, %d windows checked of %d",
 		stats.requests, stats.cached, stats.silent, stats.limited, len(done), len(got))
 
