@@ -199,6 +199,7 @@ func (s *server) runJob(ctx context.Context, j *job) {
 	o.noComments = j.Req.NoComments
 	o.no1001 = j.Req.No1001
 	o.noLinks = j.Req.NoLinks
+	o.noCache = o.noCache || j.Req.Refresh // a forced rescan asks Shazam again instead of replaying cached answers
 	if j.Req.MinConfidence != "" {
 		o.minConf = j.Req.MinConfidence
 	}

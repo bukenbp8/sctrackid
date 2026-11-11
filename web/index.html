@@ -516,7 +516,7 @@ $("#detail").addEventListener("click", async (e) => {
     return;
   }
   if (b.dataset.act === "rescan") {
-    if (!confirm("Decode this set again from scratch? It joins the queue like any new job.")) return;
+    if (!confirm("Decode this set again from scratch? Every sample is sent to Shazam again, so it takes as long as a first scan. It joins the queue like any new job.")) return;
     $("#url").value = j.request.url; $("#refresh").checked = true;
     $("#form").requestSubmit();
     window.scrollTo({ top: 0, behavior: "smooth" });

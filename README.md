@@ -14,7 +14,7 @@ The compose file keeps everything in the `sctrackid-data` volume: the library da
 
 Every finished lookup is saved to a SQLite database (`-db`, default `sctrackid.db`; env `SCTRACKID_DB`; empty disables it).
 
-- If someone submits a set that was already decoded, the result comes back instantly instead of being queued. This only happens when the stored run used at least the options asked for. For example, a run that skipped audio is never served for a request that wants audio. Tick "force rescan" to decode a set again.
+- If someone submits a set that was already decoded, the result comes back instantly instead of being queued. This only happens when the stored run used at least the options asked for. For example, a run that skipped audio is never served for a request that wants audio. Tick "force rescan" to decode a set again; this also ignores the cached Shazam answers, so every sample is sent again.
 - The archive panel searches all decoded sets by set title, uploader, artist or track name, and shows where in the set a matching track plays.
 - A new run only replaces a stored result if it is at least as complete.
 
@@ -22,11 +22,11 @@ Every finished lookup is saved to a SQLite database (`-db`, default `sctrackid.d
 
 A track that Shazam hears in only one sample is as often a stray match as a real one. Each of these is listened to again half an interval before and after. If it is heard again it counts as two matches (high confidence); if not, it stays in the list as low confidence, so `min confidence: medium` hides it. This needs `-sample` to be at most half of `-interval` (the defaults, 12 and 30, are fine).
 
-Shazam answers are cached per set. Once a set has been decoded completely, a later run that finds all its answers in the cache (a "force rescan", or the same set with other options) does not download the audio again.
+Shazam answers are cached per set. Once a set has been decoded completely, a later run that finds all its answers in the cache (the same set with other options, or after a failed or cancelled run) does not download the audio again. A "force rescan" and `-no-cache` skip the cache.
 
 ### Track times and versions
 
-Shazam also says how far into the recording a sample is. From that the list shows when a track started in the set, not just the first sample that heard it. A computed start more than two minutes before that first sample is not used, since the DJ probably dropped the track in halfway. Samples cached by an older version carry no position, so those tracks keep the old timing until they are fetched again (`-no-cache`).
+Shazam also says how far into the recording a sample is. From that the list shows when a track started in the set, not just the first sample that heard it. A computed start more than two minutes before that first sample is not used, since the DJ probably dropped the track in halfway. Samples cached by an older version carry no position, so those tracks keep the old timing until they are fetched again ("force rescan" or `-no-cache`).
 
 Shazam often names one playing track as different releases of the same song from one sample to the next ("Nein, Mann! (X Remix)", then "Nein Mann (Y Remix)"). Entries by the same artist with the same title outside the brackets, within eight minutes of each other, are folded into one, named after the version heard most. Two versions that both come from the description or the comments are left alone.
 
