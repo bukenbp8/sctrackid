@@ -136,6 +136,13 @@ form.cmd { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
 .badge.queued { color: var(--cyan); }
 .badge.done { color: var(--grn); }
 .badge.failed, .badge.canceled { color: var(--mag); }
+.archive { margin-top: 18px; }
+.archive .prompt { margin-bottom: 12px; }
+.archive .prompt input { padding-left: 0; }
+.alist { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; max-height: 60vh; overflow-y: auto; }
+.qi.lib { border-left-color: var(--mag); }
+.qi .hit { font-size: 12px; color: var(--yel); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qi .hit span { color: var(--dim); }
 .empty { color: var(--dim); font-size: 13px; padding: 18px 4px; text-align: center; letter-spacing: .1em; }
 .empty b { color: var(--mag); font-weight: normal; }
 
@@ -240,6 +247,7 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
         <label><input type="checkbox" id="no_comments"><span>skip comments</span></label>
         <label><input type="checkbox" id="no_1001"><span>skip 1001tracklists</span></label>
         <label><input type="checkbox" id="no_links"><span>skip links</span></label>
+        <label title="ignore the archive and decode the set again"><input type="checkbox" id="refresh"><span>force rescan</span></label>
         <label>min confidence
           <select id="min_confidence"><option>low</option><option>medium</option><option>high</option></select>
         </label>
@@ -256,6 +264,14 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
     </section>
     <section class="panel cy" id="detail"></section>
   </div>
+  <section class="panel archive">
+    <h2 class="ptitle"><span><i>04</i> // archive</span><span id="acount"></span></h2>
+    <div class="prompt">
+      <label for="aq">grep -i</label>
+      <input id="aq" placeholder="search decoded sets: set title, uploader, artist or track" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="alist" id="alist"></div>
+  </section>
   <footer>one job at a time · others wait their turn · shazam × comments × 1001tracklists</footer>
 </div>
 <div class="toast" id="toast"></div>
@@ -264,7 +280,9 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
 "use strict";
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const S = { jobs: [], sel: null, detail: null, log: [] };
+// sel is a job id (number) or "L<setId>" for a set opened from the archive
+const S = { jobs: [], sel: null, detail: null, log: [], lib: null, libMin: "" };
+const isLib = (sel) => typeof sel === "string";
 
 const fmt = (sec) => {
   if (sec == null || sec < 0) return "?";
@@ -328,12 +346,12 @@ $("#queue").addEventListener("click", (e) => {
 });
 
 // ---------- detail ----------
-async function select(id) {
-  S.sel = id; S.detail = null; S.log = [];
-  renderQueue(); renderDetail();
+async function select(id, min = "") {
+  S.sel = id; S.detail = null; S.log = []; S.libMin = min;
+  renderQueue(); renderArchive(); renderDetail();
   if (id == null) return;
   try {
-    const r = await fetch(`/api/jobs/${id}`);
+    const r = await fetch(isLib(id) ? `/api/library/${id.slice(1)}?min=${encodeURIComponent(min)}` : `/api/jobs/${id}`);
     if (!r.ok) throw new Error((await r.json()).error);
     const d = await r.json();
     if (S.sel !== id) return;
@@ -347,9 +365,18 @@ function termHTML(lines, live) {
   return lines.map((l) => `<span class="${lineClass(l)}">${esc(l)}</span>`).join("\n") + (live ? `\n<span class="cur"></span>` : "");
 }
 
+// an archived set rendered like a finished job
+function libJob() {
+  const id = S.sel.slice(1), set = (S.lib || []).find((x) => x.id === id) || {}, res = S.detail && S.detail.result;
+  return { id, lib: true, state: "done", request: { url: (res && res.url) || set.url || "" },
+    title: (res && res.title) || set.title, uploader: (res && res.uploader) || set.uploader,
+    duration_sec: (res && res.duration_sec) || set.duration_sec, identified: (S.detail && S.detail.identified) || set.identified };
+}
+const txtURL = (j, dl) => j.lib ? `/api/library/${j.id}/txt?min=${encodeURIComponent(S.libMin)}${dl ? "&dl=1" : ""}` : `/api/jobs/${j.id}/txt`;
+
 function renderDetail() {
   const el = $("#detail");
-  const j = S.jobs.find((x) => x.id === S.sel);
+  const j = isLib(S.sel) ? libJob() : S.jobs.find((x) => x.id === S.sel);
   if (!j) {
     el.innerHTML = `<div class="idle"><div><div class="big">NO&nbsp;SIGNAL</div><p>select a job or inject a target</p></div></div>`;
     return;
@@ -362,20 +389,22 @@ function renderDetail() {
     j.uploader ? `<b>${esc(j.uploader)}</b>` : "",
     j.duration_sec ? fmt(j.duration_sec) : "",
     j.started ? `runtime ${elapsed(j)}` : "",
+    j.identified ? `decoded ${esc(new Date(j.identified).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}` : "",
     j.file ? `saved → <b>${esc(j.file)}</b>` : "",
   ].filter(Boolean).join(" · ");
 
   let html = `<div class="dhead">
     <div style="min-width:0;flex:1">
-      <h2 class="ptitle" style="margin-bottom:8px"><span><i>03</i> // job #${j.id}</span>${badge(j)}</h2>
+      <h2 class="ptitle" style="margin-bottom:8px"><span><i>03</i> // ${j.lib ? "archive" : "job #" + j.id}</span>${j.lib ? `<span class="badge done">archived</span>` : badge(j)}</h2>
       <h2>${esc(label(j))}</h2>
       <div class="dmeta">${meta || esc(j.request.url)}</div>
     </div>
     <div class="actions">
       <a class="btn ghost" href="${esc(sc)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center">open ↗</a>
-      ${res ? `<a class="btn ghost" href="/api/jobs/${j.id}/txt" style="display:inline-flex;align-items:center">.txt ↓</a>
+      ${res ? `<a class="btn ghost" href="${txtURL(j, true)}" style="display:inline-flex;align-items:center">.txt ↓</a>
                <button class="btn ghost" data-act="copy">copy</button>` : ""}
-      ${j.state === "running" ? `<button class="btn ghost red" data-act="cancel">abort</button>`
+      ${j.lib ? `<button class="btn ghost" data-act="rescan">rescan</button>`
+        : j.state === "running" ? `<button class="btn ghost red" data-act="cancel">abort</button>`
         : j.state === "queued" ? `<button class="btn ghost red" data-act="cancel">dequeue</button>`
         : `<button class="btn ghost red" data-act="cancel">purge</button>`}
     </div>
@@ -419,7 +448,7 @@ function renderDetail() {
       ${[tl.date, tl.play_time, tl.ided ? tl.ided + " IDed" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>`;
   }
 
-  if (j.state !== "queued") {
+  if (j.state !== "queued" && !j.lib) {
     html += `<details class="sect" ${live || !res ? "open" : ""}><summary><h3><span class="caret">▸</span> system log · ${S.log.length} lines</h3></summary>
       <div class="term" id="term">${termHTML(S.log, live)}</div></details>`;
   }
@@ -431,15 +460,20 @@ function renderDetail() {
 $("#detail").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-act]");
   if (!b) return;
-  const j = S.jobs.find((x) => x.id === S.sel);
+  const j = isLib(S.sel) ? libJob() : S.jobs.find((x) => x.id === S.sel);
   if (!j) return;
-  if (b.dataset.act === "cancel") {
+  if (b.dataset.act === "rescan") {
+    if (!confirm("Decode this set again from scratch? It joins the queue like any new job.")) return;
+    $("#url").value = j.request.url; $("#refresh").checked = true;
+    $("#form").requestSubmit();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } else if (b.dataset.act === "cancel") {
     if (j.state === "running" && !confirm("Abort the running job? Partial results are kept.")) return;
     const r = await fetch(`/api/jobs/${j.id}`, { method: "DELETE" });
     if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "failed", true);
     if (j.state !== "running") { toast(`job #${j.id} ${j.state === "queued" ? "dequeued" : "purged"}`); select(null); }
   } else if (b.dataset.act === "copy") {
-    const r = await fetch(`/api/jobs/${j.id}/txt`);
+    const r = await fetch(txtURL(j));
     try { await navigator.clipboard.writeText(await r.text()); toast("tracklist copied to clipboard"); }
     catch { toast("clipboard blocked", true); }
   }
@@ -485,6 +519,7 @@ function onJobs(jobs) {
     if (p && p.state === "running" && j.state !== "running")
       toast(`job #${j.id} ${j.state}: ${label(j)}${j.state === "done" ? ` — ${j.track_count} tracks` : ""}`, j.state !== "done");
   }
+  if (isLib(S.sel)) return renderQueue(); // viewing an archived set: leave it open
   if (S.sel != null && !jobs.some((j) => j.id === S.sel)) S.sel = null;
   if (S.sel == null) {
     const pick = jobs.find((j) => j.state === "running") || jobs[jobs.length - 1];
@@ -507,6 +542,7 @@ function connect() {
     if (e.type === "jobs") onJobs(e.jobs || []);
     else if (e.type === "log") appendLog(e.id, e.text);
     else if (e.type === "progress") updateProgress(e.id, e.text);
+    else if (e.type === "library") loadArchive();
   };
 }
 connect();
@@ -588,7 +624,7 @@ $("#form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const msg = $("#msg"), go = $("#go");
   const body = { url: $("#url").value.trim(), min_confidence: $("#min_confidence").value };
-  for (const k of ["thorough", "no_audio", "no_comments", "no_1001", "no_links"]) body[k] = $("#" + k).checked;
+  for (const k of ["thorough", "no_audio", "no_comments", "no_1001", "no_links", "refresh"]) body[k] = $("#" + k).checked;
   body.website = $("#website").value;
   go.disabled = true; msg.className = "msg"; msg.textContent = "> computing proof of work…";
   try {
@@ -598,6 +634,14 @@ $("#form").addEventListener("submit", async (e) => {
     const r = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.statusText);
+    $("#url").value = ""; $("#refresh").checked = false;
+    if (d.library_id) {
+      msg.className = "msg ok";
+      msg.textContent = "> already decoded — loaded instantly from the archive (tick “force rescan” to decode again)";
+      select("L" + d.library_id, body.min_confidence);
+      if (window.innerWidth <= 900) $("#detail").scrollIntoView({ behavior: "smooth" });
+      return;
+    }
     const busy = S.jobs.some((j) => j.state === "running");
     msg.className = "msg ok";
     msg.textContent = busy ? `> job #${d.id} queued — worker busy, it runs when the current job finishes` : `> job #${d.id} accepted — starting`;
@@ -608,6 +652,44 @@ $("#form").addEventListener("submit", async (e) => {
     msg.className = "msg err"; msg.textContent = "> rejected: " + err.message;
   } finally { go.disabled = false; }
 });
+
+// ---------- archive ----------
+let archiveSeq = 0;
+async function loadArchive() {
+  const seq = ++archiveSeq;
+  try {
+    const r = await fetch("/api/library?q=" + encodeURIComponent($("#aq").value.trim()));
+    const d = await r.json();
+    if (seq !== archiveSeq) return; // a newer search is in flight
+    if (!d.enabled) { $(".archive").style.display = "none"; return; }
+    S.lib = d.sets || [];
+    renderArchive();
+  } catch { /* keep the old list */ }
+}
+function renderArchive() {
+  const el = $("#alist");
+  if (!S.lib) return;
+  const q = $("#aq").value.trim();
+  $("#acount").textContent = q ? `${S.lib.length}${S.lib.length >= 50 ? "+" : ""} match${S.lib.length === 1 ? "" : "es"}` : `latest ${S.lib.length}`;
+  if (!S.lib.length) {
+    el.innerHTML = `<div class="empty">${q ? "no match in the archive" : "archive empty<br><b>&gt;</b> finished jobs land here"}</div>`;
+    return;
+  }
+  el.innerHTML = S.lib.map((x) => `<div class="qi lib${S.sel === "L" + x.id ? " sel" : ""}" data-id="${esc(x.id)}">
+      <div class="t">${esc(x.title)}</div>
+      <div class="m"><span>${esc(x.uploader)} · ${fmt(x.duration_sec)}</span><span>${x.track_count} tracks</span></div>
+      ${(x.matches || []).map((m) => `<div class="hit"><span>${fmt(m.time_sec)}</span> ${esc(m.artist)} — ${esc(m.title)}</div>`).join("")}
+    </div>`).join("");
+}
+let aqT;
+$("#aq").addEventListener("input", () => { clearTimeout(aqT); aqT = setTimeout(loadArchive, 200); });
+$("#alist").addEventListener("click", (e) => {
+  const el = e.target.closest(".qi");
+  if (!el) return;
+  select("L" + el.dataset.id);
+  $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
+});
+loadArchive();
 
 // ---------- clock / timers ----------
 setInterval(() => {

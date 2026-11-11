@@ -48,6 +48,7 @@ type jobRequest struct {
 	No1001        bool   `json:"no_1001"`
 	NoLinks       bool   `json:"no_links"`
 	MinConfidence string `json:"min_confidence"`
+	Refresh       bool   `json:"refresh,omitempty"` // ignore the library and decode again
 }
 
 type job struct {
@@ -83,6 +84,7 @@ type event struct {
 type server struct {
 	base  options
 	guard *guard
+	lib   *library // nil when disabled
 
 	mu     sync.Mutex
 	jobs   []*job // oldest first
@@ -93,11 +95,22 @@ type server struct {
 	subs  map[chan event]struct{}
 }
 
-func serveWeb(ctx context.Context, addr string, base options, gc guardConfig) error {
+func serveWeb(ctx context.Context, addr string, base options, gc guardConfig, dbPath string) error {
 	if _, err := strconv.Atoi(addr); err == nil {
 		addr = "localhost:" + addr // "-serve 8080"
 	}
-	s := &server{base: base, guard: newGuard(ctx, gc), wake: make(chan struct{}, 1), subs: map[chan event]struct{}{}}
+	g, err := newGuard(ctx, gc)
+	if err != nil {
+		return err
+	}
+	s := &server{base: base, guard: g, wake: make(chan struct{}, 1), subs: map[chan event]struct{}{}}
+	if dbPath != "" {
+		if s.lib, err = openLibrary(dbPath); err != nil {
+			return err
+		}
+		defer s.lib.db.Close()
+		fmt.Fprintf(os.Stderr, "library: %s\n", dbPath)
+	}
 	go s.worker(ctx)
 
 	static, _ := fs.Sub(webFS, "web")
@@ -110,6 +123,9 @@ func serveWeb(ctx context.Context, addr string, base options, gc guardConfig) er
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleDelete)
 	mux.HandleFunc("GET /api/jobs/{id}/txt", s.handleText)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("GET /api/library", s.handleLibrarySearch)
+	mux.HandleFunc("GET /api/library/{id}", s.handleLibraryGet)
+	mux.HandleFunc("GET /api/library/{id}/txt", s.handleLibraryText)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -200,6 +216,13 @@ func (s *server) runJob(ctx context.Context, j *job) {
 			file = ""
 		} else {
 			logf("· saved tracklist to %s", file)
+		}
+	}
+	if rep != nil && err == nil && ctx.Err() == nil && s.lib != nil {
+		if lerr := s.lib.Save(rep, j.Req.URL, optsOf(j.Req, s.base)); lerr != nil {
+			logf("! could not save to library: %v", lerr)
+		} else {
+			defer s.publish(event{Type: "library"})
 		}
 	}
 	w.flush()
@@ -405,7 +428,13 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 403, msg)
 		return
 	}
-	client := clientKey(r)
+	if s.lib != nil && !req.Refresh {
+		if id, ok := s.lib.Lookup(req.URL, optsOf(req, s.base)); ok {
+			writeJSON(w, 200, map[string]string{"library_id": strconv.FormatInt(id, 10)})
+			return
+		}
+	}
+	client := s.guard.clientKey(r)
 
 	s.mu.Lock()
 	active, queued := 0, 0
@@ -484,7 +513,7 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 404, "no such job")
 		return
 	}
-	if j.owner != clientKey(r) {
+	if j.owner != s.guard.clientKey(r) {
 		s.mu.Unlock()
 		httpError(w, 403, "only whoever submitted this job can cancel or remove it")
 		return
@@ -530,7 +559,7 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 500, "streaming unsupported")
 		return
 	}
-	client := clientKey(r)
+	client := s.guard.clientKey(r)
 	if !s.guard.openStream(client) {
 		httpError(w, 429, "too many open connections")
 		return
@@ -582,4 +611,59 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 	}
+}
+
+// --- library ---
+
+func (s *server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
+	if s.lib == nil {
+		writeJSON(w, 200, map[string]any{"enabled": false, "sets": []librarySet{}})
+		return
+	}
+	q := r.URL.Query().Get("q")
+	if len(q) > 200 {
+		q = q[:200]
+	}
+	sets, err := s.lib.Search(q, 50)
+	if err != nil {
+		httpError(w, 500, "search failed")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"enabled": true, "sets": sets})
+}
+
+func (s *server) libraryReport(w http.ResponseWriter, r *http.Request) *Report {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if s.lib == nil || err != nil {
+		httpError(w, 404, "no such set")
+		return nil
+	}
+	min := r.URL.Query().Get("min")
+	if _, ok := confRank[min]; !ok {
+		min = ""
+	}
+	rep, err := s.lib.Get(id, min)
+	if err != nil {
+		httpError(w, 404, "no such set")
+		return nil
+	}
+	return rep
+}
+
+func (s *server) handleLibraryGet(w http.ResponseWriter, r *http.Request) {
+	if rep := s.libraryReport(w, r); rep != nil {
+		writeJSON(w, 200, map[string]any{"identified": rep.Identified, "result": rep.JSON()})
+	}
+}
+
+func (s *server) handleLibraryText(w http.ResponseWriter, r *http.Request) {
+	rep := s.libraryReport(w, r)
+	if rep == nil {
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if r.URL.Query().Get("dl") != "" {
+		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(textFileName(rep.Track)))
+	}
+	_, _ = io.WriteString(w, rep.Text())
 }

@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"math/bits"
 	"net"
 	"net/http"
@@ -26,18 +27,20 @@ import (
 )
 
 type guardConfig struct {
-	powBits         int // leading zero bits required in the proof of work; 0 disables it
-	maxActivePerIP  int // queued + running jobs per client; 0 = unlimited
-	maxPerHourPerIP int // job submissions per client per hour; 0 = unlimited
-	maxQueue        int // queued jobs in total; 0 = unlimited
-	maxStreamsPerIP int // concurrent live-update connections per client; 0 = unlimited
+	powBits         int    // leading zero bits required in the proof of work; 0 disables it
+	maxActivePerIP  int    // queued + running jobs per client; 0 = unlimited
+	maxPerHourPerIP int    // job submissions per client per hour; 0 = unlimited
+	maxQueue        int    // queued jobs in total; 0 = unlimited
+	maxStreamsPerIP int    // concurrent live-update connections per client; 0 = unlimited
+	trustedProxies  string // comma-separated IPs/CIDRs allowed to set X-Forwarded-For
 }
 
 const challengeTTL = 10 * time.Minute
 
 type guard struct {
-	cfg guardConfig
-	key []byte
+	cfg     guardConfig
+	key     []byte
+	proxies []*net.IPNet
 
 	mu      sync.Mutex
 	used    map[string]time.Time   // spent challenges -> their expiry
@@ -45,7 +48,7 @@ type guard struct {
 	streams map[string]int         // client -> open event streams
 }
 
-func newGuard(ctx context.Context, cfg guardConfig) *guard {
+func newGuard(ctx context.Context, cfg guardConfig) (*guard, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		panic(err)
@@ -57,8 +60,40 @@ func newGuard(ctx context.Context, cfg guardConfig) *guard {
 		submits: map[string][]time.Time{},
 		streams: map[string]int{},
 	}
+	for _, p := range strings.Split(cfg.trustedProxies, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		if !strings.Contains(p, "/") {
+			if strings.Contains(p, ":") {
+				p += "/128"
+			} else {
+				p += "/32"
+			}
+		}
+		_, n, err := net.ParseCIDR(p)
+		if err != nil {
+			return nil, fmt.Errorf("trusted proxies: %w", err)
+		}
+		g.proxies = append(g.proxies, n)
+	}
 	go g.janitor(ctx)
-	return g
+	return g, nil
+}
+
+func (g *guard) trusted(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	for _, n := range g.proxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *guard) janitor(ctx context.Context) {
@@ -85,16 +120,16 @@ func (g *guard) janitor(ctx context.Context) {
 }
 
 // clientKey identifies the client behind a request. X-Forwarded-For /
-// X-Real-IP are only honoured when the connection comes from loopback, i.e. a
-// reverse proxy on the same machine; anyone else could forge them. IPv6
-// clients are grouped by /64 because devices rotate addresses within it.
-func clientKey(r *http.Request) string {
+// X-Real-IP are only honoured when the connection comes from loopback or a
+// configured trusted proxy; anyone else could forge them. IPv6 clients are
+// grouped by /64 because devices rotate addresses within it.
+func (g *guard) clientKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
 	ip := net.ParseIP(host)
-	if ip != nil && ip.IsLoopback() {
+	if g.trusted(ip) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
 			if p := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); p != nil {

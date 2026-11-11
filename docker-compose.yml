@@ -1,0 +1,22 @@
+services:
+  sctrackid:
+    build: .
+    image: sctrackid:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # optional: fixed SoundCloud client_id (otherwise scraped automatically)
+      SC_CLIENT_ID: ${SC_CLIENT_ID:-}
+      # optional: free YouTube Data API key for direct video links
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      # behind a reverse proxy that is not in this container (e.g. on the docker host),
+      # trust its X-Forwarded-For so rate limits apply per visitor, e.g. 172.16.0.0/12
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+    # extra flags go here, e.g. stricter limits:
+    # command: ["-serve", ":8080", "-max-per-hour", "5", "-pow-bits", "20"]
+    volumes:
+      - sctrackid-data:/data
+
+volumes:
+  sctrackid-data:

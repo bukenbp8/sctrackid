@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"text/tabwriter"
 	"time"
 )
@@ -62,15 +63,17 @@ func main() {
 	flag.IntVar(&gc.maxPerHourPerIP, "max-per-hour", 10, "web: max job submissions per client per hour (0 = unlimited)")
 	flag.IntVar(&gc.maxQueue, "max-queue", 30, "web: max jobs waiting in the queue overall (0 = unlimited)")
 	flag.IntVar(&gc.maxStreamsPerIP, "max-streams", 8, "web: max open live-update connections per client (0 = unlimited)")
+	flag.StringVar(&gc.trustedProxies, "trusted-proxies", os.Getenv("TRUSTED_PROXIES"), "web: comma-separated IPs/CIDRs of reverse proxies whose X-Forwarded-For is trusted, besides localhost (env TRUSTED_PROXIES)")
+	dbPath := flag.String("db", envOr("SCTRACKID_DB", "sctrackid.db"), "web: SQLite library of finished lookups, for instant repeat results and search; empty disables (env SCTRACKID_DB)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <soundcloud-url>\n       %s -serve localhost:8080\n\nflags:\n", os.Args[0], os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *serve != "" {
-		if err := serveWeb(ctx, *serve, o, gc); err != nil {
+		if err := serveWeb(ctx, *serve, o, gc, *dbPath); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -107,6 +110,13 @@ func (s *switchWriter) Set(w io.Writer) {
 	s.mu.Unlock()
 }
 
+func envOr(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
+}
+
 func logf(format string, a ...any) { fmt.Fprintf(logOut, format+"\n", a...) }
 
 // Report is the outcome of analyzing one SoundCloud set.
@@ -116,6 +126,7 @@ type Report struct {
 	Entries    []*Entry
 	Unresolved map[int]int
 	TL         *TL1001Result
+	Identified time.Time
 }
 
 func run(ctx context.Context, link string, o options) error {
@@ -238,7 +249,7 @@ func analyze(ctx context.Context, link string, o options) (*Report, error) {
 		links.Save()
 		logf("· links: %d direct YouTube videos, %d YouTube search links", found, len(entries)-found)
 	}
-	return &Report{track, dur, entries, unresolvedAsks(asks, entries), tlRes}, nil
+	return &Report{track, dur, entries, unresolvedAsks(asks, entries), tlRes, time.Now()}, nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) {
@@ -366,7 +377,7 @@ func (r *Report) Text() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", t.Title)
 	fmt.Fprintf(&b, "by %s · %s\n%s\n", t.User.Username, fmtTime(r.Dur), t.PermalinkURL)
-	fmt.Fprintf(&b, "identified %s with sctrackid\n", time.Now().Format("2006-01-02 15:04"))
+	fmt.Fprintf(&b, "identified %s with sctrackid\n", r.Identified.Format("2006-01-02 15:04"))
 	printTable(&b, r.Entries, r.Unresolved, r.TL)
 	return b.String()
 }
