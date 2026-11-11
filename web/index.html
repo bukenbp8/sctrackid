@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#05040a">
 <title>SCTRACKID // netrunner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -114,7 +115,12 @@ form.cmd { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
 
 /* ---------- layout ---------- */
 .grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 18px; margin-top: 18px; align-items: start; }
-@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } form.cmd { grid-template-columns: 1fr; } .btn { width: 100%; } }
+@media (max-width: 900px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  form.cmd { grid-template-columns: minmax(0, 1fr); }
+  .btn { width: 100%; }
+  .actions .btn { width: auto; }
+}
 
 /* ---------- queue ---------- */
 .queue { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; padding-right: 2px; }
@@ -153,6 +159,7 @@ form.cmd { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
 .dmeta { color: var(--dim); font-size: 13px; margin-top: 6px; }
 .dmeta b { color: var(--txt); font-weight: normal; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.actions .btn { display: inline-flex; align-items: center; justify-content: center; }
 .prog { margin: 18px 0 6px; }
 .prog .track { height: 10px; border: 1px solid var(--line); background: repeating-linear-gradient(90deg, transparent 0 9px, rgba(255,255,255,.04) 9px 10px); position: relative; overflow: hidden; }
 .prog .fill { height: 100%; background: linear-gradient(90deg, var(--mag), var(--yel)); box-shadow: 0 0 14px var(--mag); transition: width .5s; }
@@ -207,12 +214,72 @@ tr.ok td.tr .a { color: var(--grn); }
 .lnk { white-space: nowrap; font-size: 13px; }
 .lnk a + a { margin-left: 10px; }
 .lnk .yt { color: var(--mag); }
+/* ---------- phones ---------- */
 @media (max-width: 640px) {
-  table, tbody, tr, td { display: block; width: 100% !important; }
+  body { font-size: 14px; }
+  .wrap { padding: 14px max(10px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
+  header { margin-bottom: 14px; gap: 10px; }
+  .sub { font-size: 10px; letter-spacing: .14em; margin-top: 6px; }
+  .hud { gap: 6px; flex-wrap: nowrap; width: 100%; }
+  .chip { padding: 5px 8px; font-size: 11px; letter-spacing: .08em; white-space: nowrap; }
+  .chip.clock { display: none; }
+  .panel { padding: 14px 12px; backdrop-filter: none; --cut: 10px; }
+  .grid, .archive { margin-top: 12px; }
+  .grid { gap: 12px; }
+
+  /* command bar: short prompt, options as a two-column grid of full-size tap targets */
+  .prompt label { padding: 0 8px 0 10px; }
+  .prompt .long { display: none; }
+  .prompt input { padding: 13px 10px 13px 0; }
+  .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  .opts label { min-height: 40px; }
+  .opts label:last-child { grid-column: 1 / -1; }
+  .opts input[type=checkbox] { width: 20px; height: 20px; flex: none; }
+  .opts select { font-size: 16px; padding: 6px 8px; } /* 16px: no zoom on focus in iOS */
+  .msg:empty { display: none; }
+
+  .queue { max-height: 45vh; }
+  .qi { padding: 12px; }
+  .alist { grid-template-columns: minmax(0, 1fr); max-height: 55vh; }
+
+  .dhead { gap: 12px; }
+  .actions { width: 100%; }
+  .actions .btn { flex: 1 1 0; min-height: 42px; padding: 0 6px; letter-spacing: .12em; }
+  .term { height: 220px; font-size: 12px; }
+
+  /* tracklist: one compact card per track instead of a table */
+  table, tbody { display: block; width: 100%; }
   thead { display: none; }
-  tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
-  td { border: 0; padding: 2px 4px; text-align: left !important; }
+  tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px 10px;
+    grid-template-areas: "tm sr cf" "tr tr tr" "lnk lnk vf"; padding: 10px 2px; border-bottom: 1px solid var(--line); }
+  tr:hover td { background: none; }
+  td { display: block; border: 0; padding: 0; width: auto !important; text-align: left !important; }
   td.n { display: none; }
+  td.tm { grid-area: tm; }
+  td.sr { grid-area: sr; min-width: 0; }
+  td.cf { grid-area: cf; justify-self: end; }
+  td.tr { grid-area: tr; font-size: 15px; line-height: 1.35; word-break: break-word; }
+  td.lnk { grid-area: lnk; font-size: 14px; white-space: normal; }
+  td.vf { grid-area: vf; justify-self: end; }
+  .src { margin-bottom: 0; }
+  .lnk a { display: inline-block; padding: 8px 12px 8px 0; }
+  .lnk a + a { margin-left: 4px; }
+  .vb { min-width: 44px; min-height: 40px; font-size: 16px; margin: 0 0 0 6px; }
+
+  .toast { left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); max-width: none; }
+  footer { letter-spacing: .1em; line-height: 1.8; }
+}
+/* touch screens: hover styles stick after a tap, so drop the glow there */
+@media (hover: none) {
+  .btn:hover { filter: none; box-shadow: none; }
+  .btn.ghost:hover, .btn.ghost.red:hover { background: transparent; box-shadow: none; }
+  .qi:hover { background: rgba(5, 4, 10, .6); }
+  .vb:hover, .vb.re:hover { color: var(--dim); border-color: var(--line); }
+  .vb.on:hover { color: var(--grn); border-color: var(--grn); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body::after, .glitch::before, .glitch::after { animation: none; }
+  tr { animation: none; }
 }
 .note { border: 1px dashed var(--line); padding: 10px 12px; font-size: 13px; color: var(--dim); }
 .note b { color: var(--yel); font-weight: normal; }
@@ -223,8 +290,8 @@ tr.ok td.tr .a { color: var(--grn); }
 .idle p { letter-spacing: .2em; text-transform: uppercase; font-size: 12px; }
 
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 50; max-width: min(420px, calc(100vw - 32px)); padding: 12px 16px; border: 1px solid var(--cyan); background: var(--bg2); color: var(--txt); font-size: 13px;
-  box-shadow: 0 0 22px rgba(0, 240, 255, .25); transform: translateY(140%); transition: transform .25s; }
-.toast.show { transform: none; }
+  box-shadow: 0 0 22px rgba(0, 240, 255, .25); transform: translateY(calc(100% + 60px)); visibility: hidden; transition: transform .25s, visibility 0s .25s; }
+.toast.show { transform: none; visibility: visible; transition: transform .25s; }
 .toast.err { border-color: var(--mag); box-shadow: 0 0 22px rgba(255, 42, 109, .3); }
 footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em; text-align: center; text-transform: uppercase; }
 </style>
@@ -240,7 +307,7 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
       <div class="chip"><span id="linkDot" class="dot"></span><span id="linkTxt">connecting</span></div>
       <div class="chip">worker <b id="workerTxt">idle</b></div>
       <div class="chip">queue <b id="queueTxt">0</b></div>
-      <div class="chip"><b id="clock">--:--:--</b></div>
+      <div class="chip clock"><b id="clock">--:--:--</b></div>
     </div>
   </header>
 
@@ -248,7 +315,7 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
     <h2 class="ptitle"><span><i>01</i> // inject target</span></h2>
     <form class="cmd" id="form" autocomplete="off">
       <div class="prompt">
-        <label for="url">root@sctrackid:~$</label>
+        <label for="url"><span class="long">root@sctrackid:~</span>$</label>
         <input id="url" name="url" placeholder="https://soundcloud.com/artist/set" required spellcheck="false">
       </div>
       <button class="btn" id="go" type="submit">Jack in</button>
@@ -420,8 +487,8 @@ function renderDetail() {
       <div class="dmeta">${meta || esc(j.request.url)}</div>
     </div>
     <div class="actions">
-      <a class="btn ghost" href="${esc(sc)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center">open ↗</a>
-      ${res ? `<a class="btn ghost" href="${txtURL(j, true)}" style="display:inline-flex;align-items:center">.txt ↓</a>
+      <a class="btn ghost" href="${esc(sc)}" target="_blank" rel="noopener" >open ↗</a>
+      ${res ? `<a class="btn ghost" href="${txtURL(j, true)}" >.txt ↓</a>
                <button class="btn ghost" data-act="copy">copy</button>` : ""}
       ${j.lib ? `<button class="btn ghost" data-act="rescan">rescan</button>`
         : j.state === "running" ? `<button class="btn ghost red" data-act="cancel">abort</button>`
@@ -464,8 +531,8 @@ function renderDetail() {
           <td class="n">${i + 1}</td><td class="tm">${fmt(t.time_sec)}</td>
           <td class="tr"><span class="a">${esc(t.artist)}</span> — <span class="ti">${esc(t.title)}</span>
             ${was.length ? `<div class="was">corrected · not <s>${was.map(esc).join("</s>, <s>")}</s></div>` : ""}</td>
-          <td><span class="conf ${t.approved ? "high" : esc(t.confidence)}" title="${t.approved ? "confirmed by a user" : t.unverified ? "low — a single Shazam match that a second listen did not confirm" : esc(t.confidence)}"><i></i><i></i><i></i></span></td>
-          <td>${src}</td><td class="lnk">${links}</td>${verify}</tr>`;
+          <td class="cf"><span class="conf ${t.approved ? "high" : esc(t.confidence)}" title="${t.approved ? "confirmed by a user" : t.unverified ? "low — a single Shazam match that a second listen did not confirm" : esc(t.confidence)}"><i></i><i></i><i></i></span></td>
+          <td class="sr">${src}</td><td class="lnk">${links}</td>${verify}</tr>`;
       }).join("") + `</tbody></table>`;
     html += `</div>`;
     const asks = res.unresolved_id_asks || [];
@@ -711,7 +778,10 @@ $("#form").addEventListener("submit", async (e) => {
     msg.textContent = busy ? `> job #${d.id} queued — worker busy, it runs when the current job finishes` : `> job #${d.id} accepted — starting`;
     $("#url").value = "";
     const selJob = S.jobs.find((j) => j.id === S.sel);
-    if (!selJob || selJob.state !== "running") select(d.id);
+    if (!selJob || selJob.state !== "running") {
+      select(d.id);
+      if (window.innerWidth <= 900) $("#detail").scrollIntoView({ behavior: "smooth" });
+    }
   } catch (err) {
     msg.className = "msg err"; msg.textContent = "> rejected: " + err.message;
   } finally { go.disabled = false; }
