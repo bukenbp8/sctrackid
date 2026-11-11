@@ -56,6 +56,12 @@ func main() {
 	flag.StringVar(&o.minConf, "min-confidence", "low", "hide results below this confidence: low|medium|high")
 	flag.BoolVar(&o.verbose, "v", false, "verbose: log every Shazam sample")
 	serve := flag.String("serve", "", "run the web interface on this address (e.g. localhost:8080) instead of a one-off lookup")
+	var gc guardConfig
+	flag.IntVar(&gc.powBits, "pow-bits", 18, "web: proof-of-work difficulty per submission in leading zero bits (each +1 doubles the work; 0 disables)")
+	flag.IntVar(&gc.maxActivePerIP, "max-active", 2, "web: max queued+running jobs per client (0 = unlimited)")
+	flag.IntVar(&gc.maxPerHourPerIP, "max-per-hour", 10, "web: max job submissions per client per hour (0 = unlimited)")
+	flag.IntVar(&gc.maxQueue, "max-queue", 30, "web: max jobs waiting in the queue overall (0 = unlimited)")
+	flag.IntVar(&gc.maxStreamsPerIP, "max-streams", 8, "web: max open live-update connections per client (0 = unlimited)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <soundcloud-url>\n       %s -serve localhost:8080\n\nflags:\n", os.Args[0], os.Args[0])
 		flag.PrintDefaults()
@@ -64,7 +70,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if *serve != "" {
-		if err := serveWeb(ctx, *serve, o); err != nil {
+		if err := serveWeb(ctx, *serve, o, gc); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}

@@ -66,6 +66,7 @@ type job struct {
 	Tracks   int        `json:"track_count"`
 	File     string     `json:"file,omitempty"`
 
+	owner  string // clientKey of the submitter
 	log    []string
 	result *Report
 	text   string
@@ -80,7 +81,8 @@ type event struct {
 }
 
 type server struct {
-	base options
+	base  options
+	guard *guard
 
 	mu     sync.Mutex
 	jobs   []*job // oldest first
@@ -91,16 +93,17 @@ type server struct {
 	subs  map[chan event]struct{}
 }
 
-func serveWeb(ctx context.Context, addr string, base options) error {
+func serveWeb(ctx context.Context, addr string, base options, gc guardConfig) error {
 	if _, err := strconv.Atoi(addr); err == nil {
 		addr = "localhost:" + addr // "-serve 8080"
 	}
-	s := &server{base: base, wake: make(chan struct{}, 1), subs: map[chan event]struct{}{}}
+	s := &server{base: base, guard: newGuard(ctx, gc), wake: make(chan struct{}, 1), subs: map[chan event]struct{}{}}
 	go s.worker(ctx)
 
 	static, _ := fs.Sub(webFS, "web")
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(static))
+	mux.HandleFunc("GET /api/challenge", s.guard.handleChallenge)
 	mux.HandleFunc("GET /api/jobs", s.handleList)
 	mux.HandleFunc("POST /api/jobs", s.handleSubmit)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleGet)
@@ -112,7 +115,13 @@ func serveWeb(ctx context.Context, addr string, base options) error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: mux, BaseContext: func(net.Listener) context.Context { return ctx }}
+	srv := &http.Server{
+		Handler:           mux,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    16 << 10,
+	}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -240,7 +249,7 @@ func (s *server) snapshotLocked() []job {
 	pos := 0
 	for _, j := range s.jobs {
 		c := *j
-		c.log, c.result, c.cancel = nil, nil, nil
+		c.log, c.result, c.cancel, c.owner = nil, nil, nil, ""
 		c.Position = 0
 		if j.State == stateQueued {
 			pos++
@@ -359,12 +368,25 @@ func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, jobs)
 }
 
+// submitRequest is a jobRequest plus the anti-bot fields, which are not kept with the job.
+type submitRequest struct {
+	jobRequest
+	Website      string `json:"website"` // honeypot: hidden from humans, bots fill it in
+	PowChallenge string `json:"pow_challenge"`
+	PowNonce     string `json:"pow_nonce"`
+}
+
 func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	var req jobRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+	var sr submitRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&sr); err != nil {
 		httpError(w, 400, "invalid request")
 		return
 	}
+	if sr.Website != "" {
+		httpError(w, 400, "invalid request")
+		return
+	}
+	req := sr.jobRequest
 	req.URL = strings.TrimSpace(req.URL)
 	u, err := url.Parse(req.URL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") ||
@@ -379,16 +401,48 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if msg := s.guard.checkPoW(sr.PowChallenge, sr.PowNonce); msg != "" {
+		httpError(w, 403, msg)
+		return
+	}
+	client := clientKey(r)
+
 	s.mu.Lock()
-	for _, j := range s.jobs { // the same link already waiting or running: don't queue it twice
-		if j.Req.URL == req.URL && (j.State == stateQueued || j.State == stateRunning) {
+	active, queued := 0, 0
+	for _, j := range s.jobs {
+		if j.State != stateQueued && j.State != stateRunning {
+			continue
+		}
+		if j.Req.URL == req.URL { // the same link already waiting or running: don't queue it twice
 			s.mu.Unlock()
 			httpError(w, 409, fmt.Sprintf("already in the queue as job #%d", j.ID))
 			return
 		}
+		if j.owner == client {
+			active++
+		}
+		if j.State == stateQueued {
+			queued++
+		}
+	}
+	if gc := s.guard.cfg; gc.maxActivePerIP > 0 && active >= gc.maxActivePerIP {
+		s.mu.Unlock()
+		httpError(w, 429, fmt.Sprintf("you already have %d job(s) waiting or running — wait for one to finish", active))
+		return
+	}
+	if gc := s.guard.cfg; gc.maxQueue > 0 && queued >= gc.maxQueue {
+		s.mu.Unlock()
+		httpError(w, 503, "the queue is full — try again later")
+		return
+	}
+	if ok, retry := s.guard.allowSubmit(client); !ok {
+		s.mu.Unlock()
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+		httpError(w, 429, fmt.Sprintf("hourly submission limit reached — try again in %d min", int(retry.Minutes())+1))
+		return
 	}
 	s.nextID++
-	j := &job{ID: s.nextID, Req: req, State: stateQueued, Created: time.Now()}
+	j := &job{ID: s.nextID, Req: req, State: stateQueued, Created: time.Now(), owner: client}
 	s.jobs = append(s.jobs, j)
 	s.mu.Unlock()
 
@@ -428,6 +482,11 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if j == nil {
 		s.mu.Unlock()
 		httpError(w, 404, "no such job")
+		return
+	}
+	if j.owner != clientKey(r) {
+		s.mu.Unlock()
+		httpError(w, 403, "only whoever submitted this job can cancel or remove it")
 		return
 	}
 	switch j.State {
@@ -471,6 +530,13 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 500, "streaming unsupported")
 		return
 	}
+	client := clientKey(r)
+	if !s.guard.openStream(client) {
+		httpError(w, 429, "too many open connections")
+		return
+	}
+	defer s.guard.closeStream(client)
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")

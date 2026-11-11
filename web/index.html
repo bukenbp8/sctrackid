@@ -110,6 +110,7 @@ form.cmd { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
 .opts select { background: var(--bg2); color: var(--txt); border: 1px solid var(--line); font: 13px var(--mono); padding: 3px 6px; }
 .msg { grid-column: 1 / -1; min-height: 1.5em; font-size: 13px; margin-top: -4px; }
 .msg.err { color: var(--mag); } .msg.ok { color: var(--grn); }
+.hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 
 /* ---------- layout ---------- */
 .grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 18px; margin-top: 18px; align-items: start; }
@@ -243,6 +244,7 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
           <select id="min_confidence"><option>low</option><option>medium</option><option>high</option></select>
         </label>
       </div>
+      <div class="hp" aria-hidden="true"><label>Leave empty <input id="website" name="website" tabindex="-1" autocomplete="off"></label></div>
       <div class="msg" id="msg"></div>
     </form>
   </section>
@@ -434,7 +436,7 @@ $("#detail").addEventListener("click", async (e) => {
   if (b.dataset.act === "cancel") {
     if (j.state === "running" && !confirm("Abort the running job? Partial results are kept.")) return;
     const r = await fetch(`/api/jobs/${j.id}`, { method: "DELETE" });
-    if (!r.ok) return toast("failed", true);
+    if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "failed", true);
     if (j.state !== "running") { toast(`job #${j.id} ${j.state === "queued" ? "dequeued" : "purged"}`); select(null); }
   } else if (b.dataset.act === "copy") {
     const r = await fetch(`/api/jobs/${j.id}/txt`);
@@ -509,14 +511,90 @@ function connect() {
 }
 connect();
 
+// ---------- proof of work ----------
+// The server hands out a signed challenge; we find a nonce so that
+// sha256(challenge + ":" + nonce) starts with `bits` zero bits. Plain JS
+// SHA-256 because crypto.subtle is unavailable over plain http and is slow
+// for millions of tiny hashes anyway. Solved ahead of time, in slices, so the
+// page stays responsive and submitting is usually instant.
+const sha256 = (() => {
+  const K = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+  const W = new Uint32Array(64);
+  // returns the first 32-bit word of the digest of an ASCII string
+  return (str) => {
+    const len = str.length, nblk = ((len + 8) >> 6) + 1, words = new Uint32Array(nblk * 16);
+    for (let i = 0; i < len; i++) words[i >> 2] |= str.charCodeAt(i) << (24 - (i & 3) * 8);
+    words[len >> 2] |= 0x80 << (24 - (len & 3) * 8);
+    words[nblk * 16 - 1] = len * 8;
+    let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a, h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+    for (let b = 0; b < nblk; b++) {
+      for (let t = 0; t < 64; t++) {
+        if (t < 16) W[t] = words[b * 16 + t];
+        else {
+          const x = W[t - 15], y = W[t - 2];
+          W[t] = (((x >>> 7 | x << 25) ^ (x >>> 18 | x << 14) ^ (x >>> 3)) + W[t - 7] + ((y >>> 17 | y << 15) ^ (y >>> 19 | y << 13) ^ (y >>> 10)) + W[t - 16]) | 0;
+        }
+      }
+      let a = h0, bb = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+      for (let t = 0; t < 64; t++) {
+        const t1 = (h + ((e >>> 6 | e << 26) ^ (e >>> 11 | e << 21) ^ (e >>> 25 | e << 7)) + ((e & f) ^ (~e & g)) + K[t] + W[t]) | 0;
+        const t2 = (((a >>> 2 | a << 30) ^ (a >>> 13 | a << 19) ^ (a >>> 22 | a << 10)) + ((a & bb) ^ (a & c) ^ (bb & c))) | 0;
+        h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = bb; bb = a; a = (t1 + t2) | 0;
+      }
+      h0 = (h0 + a) | 0; h1 = (h1 + bb) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
+      h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0;
+    }
+    return h0 >>> 0;
+  };
+})();
+
+let powPending = null; // Promise<{challenge, nonce, expires}>
+function solvePow() {
+  return (async () => {
+    const r = await fetch("/api/challenge", { cache: "no-store" });
+    if (!r.ok) throw new Error("could not fetch challenge");
+    const { challenge, bits } = await r.json();
+    const expires = Number(challenge.split(".")[0]) * 1000 - 30000;
+    if (!bits) return { challenge, nonce: "0", expires };
+    if (bits > 32) throw new Error("proof-of-work difficulty too high");
+    const shift = 32 - bits, prefix = challenge + ":";
+    for (let n = 0; ; ) {
+      const stop = n + 20000;
+      for (; n < stop; n++) {
+        if ((sha256(prefix + n) >>> shift) === 0) return { challenge, nonce: String(n), expires };
+      }
+      await new Promise((res) => setTimeout(res, 0)); // yield to the UI
+    }
+  })();
+}
+function prepPow() {
+  powPending = solvePow();
+  powPending.catch(() => { powPending = null; });
+}
+async function takePow() {
+  let p = powPending && await powPending.catch(() => null);
+  if (!p || Date.now() > p.expires) p = await solvePow();
+  prepPow(); // start on the next one right away
+  return p;
+}
+prepPow();
+
 // ---------- submit ----------
 $("#form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const msg = $("#msg"), go = $("#go");
   const body = { url: $("#url").value.trim(), min_confidence: $("#min_confidence").value };
   for (const k of ["thorough", "no_audio", "no_comments", "no_1001", "no_links"]) body[k] = $("#" + k).checked;
-  go.disabled = true; msg.className = "msg"; msg.textContent = "";
+  body.website = $("#website").value;
+  go.disabled = true; msg.className = "msg"; msg.textContent = "> computing proof of work…";
   try {
+    const pow = await takePow();
+    body.pow_challenge = pow.challenge; body.pow_nonce = pow.nonce;
+    msg.textContent = "";
     const r = await fetch("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.statusText);
