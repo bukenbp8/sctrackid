@@ -1,0 +1,63 @@
+#   TIME     TRACK                                                                                CONF    SOURCES
+1   1:15     Lello B. - L.O.V.E (Lello B Remix)                                                   medium  shazam
+2   1:45     Fred again.., Duoteque & Orion Sun - ItsNotREEAALLLLLLLL                             high    shazam×2
+3   2:15     Jon Cutler - It’s Yours (Inspired Edit) [feat. E-Man] [Distant Music Mix]            medium  shazam
+4   4:45     TOYZZ - Generation                                                                   high    shazam×9
+5   9:15     Boundless & Miles from Mars - D.O.S.E. (Luis M Remix)                                high    shazam×6
+6   10:15    Adrian Ivan - No One Else (Deep Mix)                                                 medium  shazam
+7   10:45    LEXX - Obsesion                                                                      medium  shazam
+8   13:15    Laserkraft 3D - Nein, Mann! (Tocadisco's TOCACABANA Remix)                           medium  shazam
+9   13:45    Laserkraft 3D - Nein Mann (Tristate Remix)                                           high    shazam×4
+10  14:15    Sun (несущая свет) - Голову выше                                                     medium  shazam
+11  16:15    Victor Ruiz & Kaufmann (DE) - Don't Mess With Us                                     high    shazam×11
+12  21:45    DJ Willee - Gangsta Paradise Melodic Techno                                          medium  shazam
+13  22:15    The Poison Control Centre - Avior                                                    medium  shazam
+14  22:45    R.I.O. - Shine On                                                                    medium  shazam
+15  24:15    Nate Chapman (US) - Purple Rain                                                      medium  shazam
+16  25:15    Black Eyed Peas - Boom Boom Pow                                                      high    shazam×4
+17  27:45    Neil Stewart - Its Not Even Like That                                                medium  shazam
+18  28:15    Run-DMC - It's Like That                                                             medium  shazam
+19  30:45    MorganJ & Scrufizzer - 4thepeople                                                    high    shazam×7
+20  34:15    Owell - My Take (Extended Mix)                                                       high    shazam×7
+21  37:45    Armin van Buuren & Silver Panda - Here in My Arms (Enjoy the Silence)                high    shazam×9
+22  42:15    Lissza - Minimal Life                                                                high    shazam×4
+23  42:45    Gabi Mujica - Music Session #52 (Tech House)                                         medium  shazam
+24  44:45    SOSA - Its Time to Move                                                              high    shazam×2
+25  48:15    SKINSHIP (KOR) - Sixth Sense                                                         high    shazam×4
+26  49:15    Moxy Edits - Moxy Edits 001                                                          medium  shazam
+27  49:45    Faithless - Insomnia (Monster Mix)                                                   medium  shazam
+28  51:15    Ghostea & Sir Roscoe - Get It                                                        high    shazam×2
+29  51:45    Acapella 54 - Black Betty (But & Memo)                                               high    shazam×4
+30  54:15    Andrea Frisina & Irregular Synth - Dub City                                          medium  shazam
+31  54:45    Gigi D'Agostino - Star                                                               high    shazam×2
+32  55:15    2 Unlimited - No Limit                                                               medium  shazam
+33  55:45    Umek - Vibrancy (Kos:mo Remix)                                                       high    shazam×4
+34  57:45    Sash! - Ecuador (Klubbheads Mix)                                                     medium  shazam
+35  58:45    Mella Dee - Techno Disco Tool                                                        medium  shazam
+36  59:15    Zafrir - Swan (feat. Arishka Secret)                                                 high    shazam×3
+37  1:00:45  Kaufmann (DE) - Fluppe                                                               high    shazam×8
+38  1:04:45  Mau P - The Less I Know The Better                                                   medium  shazam
+39  1:05:15  DEADWALKMAN - Rhythm 11                                                              high    shazam×2
+40  1:05:45  LOVEFOXY - Business First                                                            medium  shazam
+41  1:06:15  METODI & JD Davis - You Gonna Want Me                                                high    shazam×2
+42  1:06:45  Metodi & Sisters Cap - Motivation                                                    medium  shazam
+43  1:08:15  Basement Jaxx - Samba Magic (Reboot Extended Mix)                                    medium  shazam
+44  1:08:45  Gibs - Take You Away                                                                 medium  shazam
+45  1:09:15  Bart Skils & Weska - For the Music                                                   high    shazam×7
+46  1:12:45  Tini Gessler - 125                                                                   high    shazam×7
+47  1:16:45  Miquel Brown - So Many Men, So Little Time                                           high    shazam×3
+48  1:17:45  bradeazy & Crazy Town - Butterfly 2026                                               high    shazam×5
+49  1:20:45  MARTA - The Heat                                                                     medium  shazam
+50  1:21:15  SCRIPT - WTF                                                                         medium  shazam
+51  1:21:45  Mimmo Amerelli - Alla Consolle (Mucha Cossa feat. La Madama Radio)                   medium  shazam
+52  1:22:45  PIANISTU - PIANISTU' House Creation                                                  medium  shazam
+53  1:25:45  Lampe - Movement Control                                                             high    shazam×5
+54  1:26:45  Mallio - No Wait                                                                     high    shazam×2
+55  1:29:45  Walker & Royce & FENIK - Utopia                                                      high    shazam×7
+56  1:33:45  Manuel Moñino - Hw&d                                                                 medium  shazam
+57  1:37:15  Captain Hook, Liquid Soul & Victor Ruiz - Liquid Hook (Victor Ruiz Remix)            high    shazam×9
+58  1:41:45  Metodi, Franco Smith & Martin Kinrus - Embrace                                       high    shazam×6
+59  1:44:45  Delerium - Silence (feat. Sarah McLachlan) [DJ Tiësto's In Search Of Sunrise Remix]  medium  shazam
+60  1:46:45  Dezmond Bowden - Eight Ball                                                          medium  shazam
+61  1:47:45  WINGARDIUM - Genetic Balikali (WINGARDIUM MASHUP)                                    high    shazam×4
+62  1:49:45  Vini Vici & Astrix - Adhana                                                          high    shazam
