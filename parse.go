@@ -15,6 +15,8 @@ type Candidate struct {
 	Order         int    // position in a description tracklist, for untimed lists
 	URL           string // shazam link, if any
 	Weak          bool   // shazam: heard once, and a second listen did not confirm it
+	Start         int    // shazam: where the recording's first second falls in the set …
+	HasStart      bool   // … when the match said where in the recording the sample sits
 }
 
 var (

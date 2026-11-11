@@ -254,6 +254,20 @@ type ShazamTrack struct {
 	Title    string `json:"title"`
 	Subtitle string `json:"subtitle"` // artist
 	URL      string `json:"url"`
+
+	// Where the sample sits in the recording, from the response's match data.
+	Matched bool    `json:"matched,omitempty"`
+	Offset  float64 `json:"offset,omitempty"` // seconds into the recording at the start of the sample
+	Skew    float64 `json:"skew,omitempty"`   // tempo difference: 0.02 = the recording advances 2% faster than the set
+}
+
+// startIn estimates when the recording's first second falls in the set, for
+// a sample taken at sampleAt seconds.
+func (t *ShazamTrack) startIn(sampleAt int) (int, bool) {
+	if !t.Matched || t.Skew <= -0.5 {
+		return 0, false
+	}
+	return int(math.Round(float64(sampleAt) - t.Offset/(1+t.Skew))), true
 }
 
 func uuid4() string {
@@ -307,10 +321,30 @@ func Recognize(ctx context.Context, client *http.Client, sig []byte, numSamples 
 		return nil, fmt.Errorf("shazam HTTP %d", resp.StatusCode)
 	}
 	var out struct {
-		Track *ShazamTrack `json:"track"`
+		Track   *ShazamTrack `json:"track"`
+		Matches []struct {
+			ID       string  `json:"id"`
+			Offset   float64 `json:"offset"`
+			TimeSkew float64 `json:"timeskew"`
+		} `json:"matches"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
+	}
+	if t := out.Track; t != nil {
+		// The best match comes first. Its id is the matched recording, which
+		// can be another release than the track shown (an extended mix, say).
+		t.Matched, t.Offset, t.Skew = false, 0, 0
+		if len(out.Matches) > 0 {
+			m := out.Matches[0]
+			for _, x := range out.Matches {
+				if x.ID == t.Key {
+					m = x
+					break
+				}
+			}
+			t.Matched, t.Offset, t.Skew = true, m.Offset, m.TimeSkew
+		}
 	}
 	return out.Track, nil
 }

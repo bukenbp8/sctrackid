@@ -24,6 +24,12 @@ A track that Shazam hears in only one sample is as often a stray match as a real
 
 Shazam answers are cached per set. Once a set has been decoded completely, a later run that finds all its answers in the cache (a "force rescan", or the same set with other options) does not download the audio again.
 
+### Track times and versions
+
+Shazam also says how far into the recording a sample is. From that the list shows when a track started in the set, not just the first sample that heard it. A computed start more than two minutes before that first sample is not used, since the DJ probably dropped the track in halfway. Samples cached by an older version carry no position, so those tracks keep the old timing until they are fetched again (`-no-cache`).
+
+Shazam often names one playing track as different releases of the same song from one sample to the next ("Nein, Mann! (X Remix)", then "Nein Mann (Y Remix)"). Entries by the same artist with the same title outside the brackets, within eight minutes of each other, are folded into one, named after the version heard most. Two versions that both come from the description or the comments are left alone.
+
 ### Confirming and retrying tracks
 
 Each track of a decoded set has two buttons in the "verify" column:

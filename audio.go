@@ -423,10 +423,11 @@ func scanWindows(ctx context.Context, stream <-chan sample, cache *shazamCache, 
 
 	// Matches in chronological order, so merging is deterministic.
 	type hit struct {
-		at    int // window index
-		t     *ShazamTrack
-		extra []int // offsets of in-between windows that heard it too
-		weak  bool
+		at     int // window index
+		t      *ShazamTrack
+		extra  []sample // in-between windows that heard it too
+		extraT []*ShazamTrack
+		weak   bool
 	}
 	var hits []*hit
 	for i, s := range got {
@@ -442,7 +443,11 @@ func scanWindows(ctx context.Context, stream <-chan sample, cache *shazamCache, 
 	for _, h := range hits {
 		lone := true
 		for _, x := range hits {
-			if x != h && same(x.t, h.t) {
+			if x == h {
+				continue
+			}
+			near := max(got[x.at].offset-got[h.at].offset, got[h.at].offset-got[x.at].offset) <= versionSpan
+			if same(x.t, h.t) || near && sameSong(x.t.Subtitle, x.t.Title, h.t.Subtitle, h.t.Title) {
 				lone = false
 				break
 			}
@@ -463,8 +468,8 @@ func scanWindows(ctx context.Context, stream <-chan sample, cache *shazamCache, 
 		verify.checked++
 		conclusive := true
 		for _, a := range checks {
-			if same(query(a), h.t) {
-				h.extra = append(h.extra, a.offset)
+			if r := query(a); same(r, h.t) {
+				h.extra, h.extraT = append(h.extra, a), append(h.extraT, r)
 				break
 			}
 			conclusive = conclusive && done[a.offset]
@@ -491,9 +496,11 @@ func scanWindows(ctx context.Context, stream <-chan sample, cache *shazamCache, 
 	var out []Candidate
 	for _, h := range hits {
 		c := Candidate{Artist: h.t.Subtitle, Title: h.t.Title, TimeSec: got[h.at].offset, Source: "shazam", URL: h.t.URL, Weak: h.weak}
+		c.Start, c.HasStart = h.t.startIn(c.TimeSec)
 		out = append(out, c)
-		for _, off := range h.extra {
-			c.TimeSec = off
+		for i, a := range h.extra {
+			c.TimeSec = a.offset
+			c.Start, c.HasStart = h.extraT[i].startIn(c.TimeSec)
 			out = append(out, c)
 		}
 	}

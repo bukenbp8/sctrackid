@@ -20,7 +20,9 @@ type Entry struct {
 
 	order    int
 	times    map[string][]int
-	variants map[string]int
+	variants map[string]int       // spelling -> score
+	urls     map[string]string    // spelling -> shazam link
+	starts   map[string][]startAt // spelling -> computed starts of the recording in the set
 	weak     bool
 }
 
@@ -75,6 +77,129 @@ func sameTrack(a1, t1, a2, t2 string) bool {
 
 var sourceRank = map[string]int{"shazam": 3, "description": 2, "comment": 1}
 
+const (
+	versionSpan = 480 // seconds within which two versions of one song count as the same play
+	maxLead     = 120 // a computed start further than this before the first sample that heard the track is not believed
+	startSlack  = 6   // samples of one play agree on the start within this many seconds
+)
+
+// sameSong reports whether two tracks are versions of one song: the same
+// artist and the same title once everything in brackets is left out
+// ("Nein, Mann! (X Remix)" and "Nein Mann (Y Remix)").
+func sameSong(a1, t1, a2, t2 string) bool {
+	b1, b2 := tokens(bracketRe.ReplaceAllString(t1, " ")), tokens(bracketRe.ReplaceAllString(t2, " "))
+	if len(b1) == 0 || len(b1) != len(b2) {
+		return false
+	}
+	if i, _ := overlap(b1, b2); i != len(b1) {
+		return false
+	}
+	ai, au := overlap(tokens(a1), tokens(a2))
+	return au > 0 && float64(ai)/float64(au) >= 0.5
+}
+
+// agreedStart picks the start that most samples of a track agree on (the
+// earliest such group on a tie). DJs loop and cut, so samples of one play
+// often disagree; when no two agree, the earliest sample is taken at its word.
+func agreedStart(starts []startAt) (int, bool) {
+	if len(starts) == 0 {
+		return 0, false
+	}
+	first := starts[0]
+	st := make([]int, len(starts))
+	for i, s := range starts {
+		st[i] = s.start
+		if s.sample < first.sample {
+			first = s
+		}
+	}
+	sort.Ints(st)
+	bestLo, bestN := 0, 1
+	for lo := range st {
+		n := 0
+		for hi := lo; hi < len(st) && st[hi]-st[lo] <= startSlack; hi++ {
+			n++
+		}
+		if n > bestN {
+			bestLo, bestN = lo, n
+		}
+	}
+	if bestN < 2 {
+		return first.start, true
+	}
+	return st[bestLo+bestN/2], true
+}
+
+// startAt is where a recording began in the set, as computed from one sample.
+type startAt struct{ sample, start int }
+
+func shazamOnly(e *Entry) bool {
+	return e.Sources["shazam"] > 0 && e.Sources["description"] == 0 && e.Sources["comment"] == 0
+}
+
+// finish derives the displayed name, time and confidence from what was collected.
+func (e *Entry) finish() {
+	// Display name: the best-ranked / most frequent spelling.
+	best, bestScore := "", -1
+	for v, s := range e.variants {
+		if s > bestScore || s == bestScore && v < best {
+			best, bestScore = v, s
+		}
+	}
+	parts := strings.SplitN(best, "\x00", 2)
+	e.Artist, e.Title = parts[0], parts[1]
+	if u := e.urls[best]; u != "" {
+		e.ShazamURL = u
+	}
+
+	// Time: description > shazam > median of comments.
+	switch {
+	case len(e.times["description"]) > 0:
+		e.TimeSec = e.times["description"][0]
+	case len(e.times["shazam"]) > 0:
+		// The first sample that heard the track, or better: where the track
+		// started, worked out from how far into the recording the samples were.
+		first := minInt(e.times["shazam"])
+		e.TimeSec = first
+		// A start far ahead of the first sample means the track was dropped
+		// in halfway (or the match is a stray): the first sample is the
+		// better guess then.
+		if st, ok := agreedStart(e.starts[best]); ok && st >= first-maxLead {
+			e.TimeSec = min(max(st, 0), first+startSlack)
+		}
+	case len(e.times["comment"]) > 0:
+		ts := append([]int(nil), e.times["comment"]...)
+		sort.Ints(ts)
+		e.TimeSec = ts[len(ts)/2]
+	}
+
+	e.Confidence, e.Unverified = confidence(e.Sources), false
+	if e.weak && e.Confidence == "medium" { // nothing but one unconfirmed Shazam hit
+		e.Confidence, e.Unverified = "low", true
+	}
+}
+
+// absorb folds another version of the same song into e.
+func (e *Entry) absorb(b *Entry) {
+	for k, n := range b.Sources {
+		e.Sources[k] += n
+	}
+	for k, ts := range b.times {
+		e.times[k] = append(e.times[k], ts...)
+	}
+	for v, n := range b.variants {
+		e.variants[v] += n
+	}
+	for v, u := range b.urls {
+		e.urls[v] = u
+	}
+	for v, st := range b.starts {
+		e.starts[v] = append(e.starts[v], st...)
+	}
+	e.weak = e.weak && b.weak
+	e.order = min(e.order, b.order)
+}
+
 func Merge(cands []Candidate) []*Entry {
 	var entries []*Entry
 	for _, c := range cands {
@@ -87,48 +212,47 @@ func Merge(cands []Candidate) []*Entry {
 		}
 		if e == nil {
 			e = &Entry{Artist: c.Artist, Title: c.Title, TimeSec: -1, Sources: map[string]int{},
-				times: map[string][]int{}, variants: map[string]int{}, order: c.Order}
+				times: map[string][]int{}, variants: map[string]int{}, urls: map[string]string{},
+				starts: map[string][]startAt{}, order: c.Order}
 			entries = append(entries, e)
 		}
+		v := c.Artist + "\x00" + c.Title
 		e.Sources[c.Source]++
 		e.weak = e.weak || c.Weak
-		if c.URL != "" && e.ShazamURL == "" {
-			e.ShazamURL = c.URL
+		if c.URL != "" && e.urls[v] == "" {
+			e.urls[v] = c.URL
 		}
-		e.variants[c.Artist+"\x00"+c.Title] += sourceRank[c.Source]*100 + 1
+		e.variants[v] += sourceRank[c.Source]*100 + 1
 		if c.TimeSec >= 0 {
 			e.times[c.Source] = append(e.times[c.Source], c.TimeSec)
 		}
+		if c.HasStart {
+			e.starts[v] = append(e.starts[v], startAt{c.TimeSec, c.Start})
+		}
 	}
-
 	for _, e := range entries {
-		// Display name: the best-ranked / most frequent spelling.
-		best, bestScore := "", -1
-		for v, s := range e.variants {
-			if s > bestScore || s == bestScore && v < best {
-				best, bestScore = v, s
+		e.finish()
+	}
+	sortEntries(entries)
+
+	// Shazam often names one playing track as different releases of the same
+	// song from one sample to the next. Fold those into one entry, unless
+	// both come from a written tracklist or comments (then it is deliberate).
+	for i := 0; i < len(entries); i++ {
+		a := entries[i]
+		for j := i + 1; j < len(entries); j++ {
+			b := entries[j]
+			if a.TimeSec < 0 || b.TimeSec < 0 || b.TimeSec-a.TimeSec > versionSpan {
+				break
+			}
+			if (shazamOnly(a) || shazamOnly(b)) && sameSong(a.Artist, a.Title, b.Artist, b.Title) {
+				a.absorb(b)
+				a.finish()
+				entries = append(entries[:j], entries[j+1:]...)
+				j--
 			}
 		}
-		parts := strings.SplitN(best, "\x00", 2)
-		e.Artist, e.Title = parts[0], parts[1]
-
-		// Time: description > shazam (first hit) > median of comments.
-		switch {
-		case len(e.times["description"]) > 0:
-			e.TimeSec = e.times["description"][0]
-		case len(e.times["shazam"]) > 0:
-			e.TimeSec = minInt(e.times["shazam"])
-		case len(e.times["comment"]) > 0:
-			ts := append([]int(nil), e.times["comment"]...)
-			sort.Ints(ts)
-			e.TimeSec = ts[len(ts)/2]
-		}
-		e.Confidence = confidence(e.Sources)
-		if e.weak && e.Confidence == "medium" { // nothing but one unconfirmed Shazam hit
-			e.Confidence, e.Unverified = "low", true
-		}
 	}
-
 	sortEntries(entries)
 	return entries
 }
