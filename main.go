@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -148,7 +149,8 @@ func run(ctx context.Context, link string, o options) error {
 	return nil
 }
 
-func analyze(ctx context.Context, link string, o options) (*Report, error) {
+// resolveTrack looks a link up on SoundCloud, refreshing a stale cached client_id.
+func resolveTrack(ctx context.Context, link string, o options) (*SoundCloud, *Track, error) {
 	sc := &SoundCloud{HTTP: &http.Client{Timeout: 30 * time.Second}, ClientID: o.clientID}
 	cached := false
 	if sc.ClientID == "" {
@@ -158,17 +160,22 @@ func analyze(ctx context.Context, link string, o options) (*Report, error) {
 		cached = false
 		logf("· fetching SoundCloud client_id…")
 		if err := sc.FetchClientID(ctx); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	track, err := sc.Resolve(ctx, link)
 	if errors.Is(err, errUnauthorized) && cached { // cached client_id went stale
 		logf("· cached client_id expired, fetching a new one…")
 		if err := sc.FetchClientID(ctx); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		track, err = sc.Resolve(ctx, link)
 	}
+	return sc, track, err
+}
+
+func analyze(ctx context.Context, link string, o options) (*Report, error) {
+	sc, track, err := resolveTrack(ctx, link, o)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +280,7 @@ func filterConfidence(es []*Entry, minConf string) []*Entry {
 	rank := map[string]int{"low": 0, "medium": 1, "high": 2}
 	var out []*Entry
 	for _, e := range es {
-		if rank[e.Confidence] >= rank[strings.ToLower(minConf)] {
+		if e.Approved || rank[e.Confidence] >= rank[strings.ToLower(minConf)] {
 			out = append(out, e)
 		}
 	}
@@ -327,7 +334,11 @@ func printTable(w io.Writer, entries []*Entry, unresolved map[int]int, tl *TL100
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "#\tTIME\tTRACK\tCONF\tSOURCES\tLINK")
 		for i, e := range entries {
-			fmt.Fprintf(tw, "%d\t%s\t%s - %s\t%s\t%s\t%s\n", i+1, fmtTime(e.TimeSec), e.Artist, e.Title, e.Confidence, sourceSummary(e.Sources), e.Links.Best())
+			conf := e.Confidence
+			if e.Approved {
+				conf = "confirmed"
+			}
+			fmt.Fprintf(tw, "%d\t%s\t%s - %s\t%s\t%s\t%s\n", i+1, fmtTime(e.TimeSec), e.Artist, e.Title, conf, sourceSummary(e.Sources), e.Links.Best())
 		}
 		tw.Flush()
 	}
@@ -403,6 +414,7 @@ func (r *Report) JSON() map[string]any {
 		entries = []*Entry{}
 	}
 	return map[string]any{
+		"id":                 strconv.FormatInt(r.Track.ID, 10),
 		"url":                r.Track.PermalinkURL,
 		"title":              r.Track.Title,
 		"uploader":           r.Track.User.Username,

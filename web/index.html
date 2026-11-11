@@ -178,6 +178,7 @@ table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { font: 700 10px var(--disp); letter-spacing: .2em; text-transform: uppercase; color: var(--dim); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 td { padding: 8px; border-bottom: 1px solid rgba(42, 36, 64, .55); vertical-align: top; }
 tr { animation: rowin .35s both; }
+table.still tr { animation: none; }
 tr:hover td { background: rgba(0, 240, 255, .04); }
 @keyframes rowin { from { opacity: 0; transform: translateX(-8px) } }
 td.n { color: var(--dim); width: 32px; text-align: right; }
@@ -193,6 +194,16 @@ td.tr .ti { color: var(--txt); opacity: .85; }
 .src.shazam { color: var(--cyan); border-color: rgba(0, 240, 255, .4); }
 .src.description { color: var(--yel); border-color: rgba(243, 230, 0, .35); }
 .src.comment { color: var(--mag); border-color: rgba(255, 42, 109, .4); }
+.src.user { color: var(--grn); border-color: rgba(57, 255, 136, .5); }
+tr.ok td.tr .a { color: var(--grn); }
+.was { font-size: 11px; color: var(--dim); }
+.was s { opacity: .8; }
+.vf { white-space: nowrap; }
+.vb { font: 13px var(--mono); background: none; border: 1px solid var(--line); color: var(--dim); cursor: pointer; padding: 1px 8px; margin-right: 4px; }
+.vb:hover { color: var(--cyan); border-color: var(--cyan); }
+.vb.on { color: var(--grn); border-color: var(--grn); box-shadow: 0 0 8px rgba(57, 255, 136, .35); }
+.vb.re:hover { color: var(--yel); border-color: var(--yel); }
+.vf .wait { font-size: 11px; color: var(--yel); animation: pulse 1.4s infinite; }
 .lnk { white-space: nowrap; font-size: 13px; }
 .lnk a + a { margin-left: 10px; }
 .lnk .yt { color: var(--mag); }
@@ -281,7 +292,8 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // sel is a job id (number) or "L<setId>" for a set opened from the archive
-const S = { jobs: [], sel: null, detail: null, log: [], lib: null, libMin: "" };
+const S = { jobs: [], sel: null, detail: null, log: [], lib: null, libMin: "", libOn: false, still: false, retrying: new Map() };
+const trackKey = (t) => `${t.time_sec}|${t.artist}|${t.title}`;
 const isLib = (sel) => typeof sel === "string";
 
 const fmt = (sec) => {
@@ -302,7 +314,8 @@ const progFrac = (j) => {
   const a = parseT(m[1]), b = parseT(m[2]);
   return b > 0 ? Math.min(1, a / b) : null;
 };
-const label = (j) => j.title || j.request.url.replace(/^https?:\/\/(www\.|m\.)?soundcloud\.com\//, "");
+const label = (j) => (j.request.retry ? `retry ${fmt(j.request.retry.time_sec)} · ` : "") +
+  (j.title || j.request.url.replace(/^https?:\/\/(www\.|m\.)?soundcloud\.com\//, ""));
 const badge = (j) => `<span class="badge ${j.state}">${j.state === "queued" ? "queued #" + j.position : j.state}</span>`;
 
 let toastT;
@@ -347,11 +360,16 @@ $("#queue").addEventListener("click", (e) => {
 
 // ---------- detail ----------
 async function select(id, min = "") {
-  S.sel = id; S.detail = null; S.log = []; S.libMin = min;
+  S.sel = id; S.detail = null; S.log = []; S.libMin = min; S.still = false;
   renderQueue(); renderArchive(); renderDetail();
   if (id == null) return;
+  await loadDetail();
+}
+const detailURL = (id) => isLib(id) ? `/api/library/${id.slice(1)}?min=${encodeURIComponent(S.libMin)}` : `/api/jobs/${id}`;
+async function loadDetail() {
+  const id = S.sel;
   try {
-    const r = await fetch(isLib(id) ? `/api/library/${id.slice(1)}?min=${encodeURIComponent(min)}` : `/api/jobs/${id}`);
+    const r = await fetch(detailURL(id));
     if (!r.ok) throw new Error((await r.json()).error);
     const d = await r.json();
     if (S.sel !== id) return;
@@ -359,6 +377,8 @@ async function select(id, min = "") {
     renderDetail();
   } catch (e) { toast("fetch failed: " + e.message, true); }
 }
+// reload the open set in place after a confirmation or retry changed it
+function refreshDetail() { S.still = true; return loadDetail(); }
 
 const lineClass = (l) => (l.startsWith("!") ? "w" : l.startsWith("·") ? "i" : "");
 function termHTML(lines, live) {
@@ -422,11 +442,17 @@ function renderDetail() {
   if (res) {
     const tracks = res.tracks || [];
     html += `<div class="sect"><h3>decoded tracklist · ${tracks.length}</h3>`;
+    // confirming and retrying work on the archived copy of the set
+    const edit = S.libOn && res.id && (j.lib || j.state === "done");
     if (!tracks.length) html += `<div class="note">no tracks identified.</div>`;
-    else html += `<table><thead><tr><th>#</th><th>time</th><th>track</th><th>conf</th><th>sources</th><th>listen</th></tr></thead><tbody>` +
+    else html += `<table${S.still ? ` class="still"` : ""}><thead><tr><th>#</th><th>time</th><th>track</th><th>conf</th><th>sources</th><th>listen</th>${edit ? "<th>verify</th>" : ""}</tr></thead><tbody>` +
       tracks.map((t, i) => {
         const L = t.links || {};
-        const src = Object.entries(t.sources || {}).map(([k, n]) => `<span class="src ${esc(k)}">${esc(k === "description" ? "desc" : k)}${n > 1 ? "×" + n : ""}</span>`).join("");
+        const was = (t.rejected || []).map((r) => `${r.artist} — ${r.title}`);
+        const verify = !edit ? "" : `<td class="vf">${S.retrying.has(trackKey(t)) ? `<span class="wait">retrying · job #${S.retrying.get(trackKey(t))}</span>`
+          : `<button class="vb${t.approved ? " on" : ""}" data-act="approve" data-i="${i}" title="${t.approved ? "confirmed by a user — click to take it back" : "confirm: this is the right track"}">✓</button>` +
+            (t.approved || t.time_sec < 0 ? "" : `<button class="vb re" data-act="retry" data-i="${i}" title="wrong track — listen again at ${fmt(t.time_sec)} and replace it">↻</button>`)}</td>`;
+        const src = (t.approved ? `<span class="src user">confirmed</span>` : "") + Object.entries(t.sources || {}).map(([k, n]) => `<span class="src ${esc(k)}">${esc(k === "description" ? "desc" : k)}${n > 1 ? "×" + n : ""}</span>`).join("");
         const links = [
           L.youtube ? `<a class="yt" href="${esc(L.youtube)}" target="_blank" rel="noopener" title="${esc(L.youtube_title || "")}">▶ yt</a>`
             : L.youtube_search ? `<a href="${esc(L.youtube_search)}" target="_blank" rel="noopener">yt?</a>` : "",
@@ -434,11 +460,12 @@ function renderDetail() {
           L.spotify_search ? `<a href="${esc(L.spotify_search)}" target="_blank" rel="noopener">sp?</a>` : "",
           t.shazam_url ? `<a href="${esc(t.shazam_url)}" target="_blank" rel="noopener">shz</a>` : "",
         ].filter(Boolean).join("");
-        return `<tr style="animation-delay:${Math.min(i, 40) * 25}ms">
+        return `<tr class="${t.approved ? "ok" : ""}" style="animation-delay:${Math.min(i, 40) * 25}ms">
           <td class="n">${i + 1}</td><td class="tm">${fmt(t.time_sec)}</td>
-          <td class="tr"><span class="a">${esc(t.artist)}</span> — <span class="ti">${esc(t.title)}</span></td>
-          <td><span class="conf ${esc(t.confidence)}" title="${esc(t.confidence)}"><i></i><i></i><i></i></span></td>
-          <td>${src}</td><td class="lnk">${links}</td></tr>`;
+          <td class="tr"><span class="a">${esc(t.artist)}</span> — <span class="ti">${esc(t.title)}</span>
+            ${was.length ? `<div class="was">corrected · not <s>${was.map(esc).join("</s>, <s>")}</s></div>` : ""}</td>
+          <td><span class="conf ${t.approved ? "high" : esc(t.confidence)}" title="${t.approved ? "confirmed by a user" : esc(t.confidence)}"><i></i><i></i><i></i></span></td>
+          <td>${src}</td><td class="lnk">${links}</td>${verify}</tr>`;
       }).join("") + `</tbody></table>`;
     html += `</div>`;
     const asks = res.unresolved_id_asks || [];
@@ -462,6 +489,32 @@ $("#detail").addEventListener("click", async (e) => {
   if (!b) return;
   const j = isLib(S.sel) ? libJob() : S.jobs.find((x) => x.id === S.sel);
   if (!j) return;
+  const res = S.detail && S.detail.result;
+  const t = b.dataset.i != null && res && (res.tracks || [])[+b.dataset.i];
+  if (b.dataset.act === "approve" || b.dataset.act === "retry") {
+    if (!t) return;
+    const ref = { artist: t.artist, title: t.title, time_sec: t.time_sec };
+    const post = (path, body) => fetch(`/api/library/${res.id}/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    b.disabled = true;
+    try {
+      if (b.dataset.act === "approve") {
+        const r = await post(`approve?min=${encodeURIComponent(j.lib ? S.libMin : "")}`, { ...ref, approved: !t.approved });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        if (S.detail && S.detail.result && S.detail.result.id === res.id) { S.detail.result = d.result; S.still = true; renderDetail(); }
+        toast(t.approved ? "confirmation removed" : `confirmed: ${t.artist} — ${t.title}`);
+      } else {
+        const pow = await takePow();
+        const r = await post("retry", { ...ref, pow_challenge: pow.challenge, pow_nonce: pow.nonce });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        S.retrying.set(trackKey(t), d.id);
+        S.still = true; renderDetail();
+        toast(`listening again at ${fmt(t.time_sec)} — job #${d.id}`);
+      }
+    } catch (err) { b.disabled = false; toast(err.message, true); }
+    return;
+  }
   if (b.dataset.act === "rescan") {
     if (!confirm("Decode this set again from scratch? It joins the queue like any new job.")) return;
     $("#url").value = j.request.url; $("#refresh").checked = true;
@@ -517,8 +570,16 @@ function onJobs(jobs) {
   for (const j of jobs) {
     const p = prev.get(j.id);
     if (p && p.state === "running" && j.state !== "running")
-      toast(`job #${j.id} ${j.state}: ${label(j)}${j.state === "done" ? ` — ${j.track_count} tracks` : ""}`, j.state !== "done");
+      toast(j.request.retry && j.state === "done" ? `job #${j.id}: retry at ${fmt(j.request.retry.time_sec)} done — tracklist updated`
+        : `job #${j.id} ${j.state}: ${label(j)}${j.state === "done" ? ` — ${j.track_count} tracks` : j.error ? ` — ${j.error}` : ""}`, j.state !== "done");
   }
+  // retries that are no longer waiting or running: give the row its buttons back
+  let settled = false;
+  for (const [k, id] of S.retrying) {
+    const rj = jobs.find((x) => x.id === id);
+    if (!rj || (rj.state !== "queued" && rj.state !== "running")) { S.retrying.delete(k); settled = true; }
+  }
+  if (settled && S.detail && S.detail.result) refreshDetail();
   if (isLib(S.sel)) return renderQueue(); // viewing an archived set: leave it open
   if (S.sel != null && !jobs.some((j) => j.id === S.sel)) S.sel = null;
   if (S.sel == null) {
@@ -542,7 +603,10 @@ function connect() {
     if (e.type === "jobs") onJobs(e.jobs || []);
     else if (e.type === "log") appendLog(e.id, e.text);
     else if (e.type === "progress") updateProgress(e.id, e.text);
-    else if (e.type === "library") loadArchive();
+    else if (e.type === "library") {
+      loadArchive();
+      if (e.text && S.detail && S.detail.result && S.detail.result.id === e.text) refreshDetail();
+    }
   };
 }
 connect();
@@ -661,6 +725,7 @@ async function loadArchive() {
     const r = await fetch("/api/library?q=" + encodeURIComponent($("#aq").value.trim()));
     const d = await r.json();
     if (seq !== archiveSeq) return; // a newer search is in flight
+    S.libOn = !!d.enabled;
     if (!d.enabled) { $(".archive").style.display = "none"; return; }
     S.lib = d.sets || [];
     renderArchive();

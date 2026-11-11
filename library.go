@@ -144,10 +144,14 @@ func (l *library) Save(rep *Report, submitted string, o scanOpts) error {
 
 	id := rep.Track.ID
 	replace := true
-	var raw string
-	if err := tx.QueryRow(`SELECT opts FROM sets WHERE id = ?`, id).Scan(&raw); err == nil {
+	var raw, oldRep string
+	if err := tx.QueryRow(`SELECT opts, report FROM sets WHERE id = ?`, id).Scan(&raw, &oldRep); err == nil {
 		var have scanOpts
 		replace = json.Unmarshal([]byte(raw), &have) != nil || o.covers(have)
+		var old storedReport
+		if replace && json.Unmarshal([]byte(oldRep), &old) == nil {
+			rep.Entries = keepUserEdits(old.Entries, rep.Entries) // confirmations and retries outlive a rescan
+		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -169,14 +173,8 @@ func (l *library) Save(rep *Report, submitted string, o scanOpts) error {
 			id, t.PermalinkURL, t.Title, t.User.Username, rep.Dur, len(rep.Entries), optJSON, repJSON, rep.Identified.Unix()); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`DELETE FROM set_tracks WHERE set_id = ?`, id); err != nil {
+		if err := writeTracks(tx, id, rep.Entries); err != nil {
 			return err
-		}
-		for i, e := range rep.Entries {
-			if _, err := tx.Exec(`INSERT INTO set_tracks (set_id, pos, artist, title, time_sec, confidence) VALUES (?, ?, ?, ?, ?, ?)`,
-				id, i, e.Artist, e.Title, e.TimeSec, e.Confidence); err != nil {
-				return err
-			}
 		}
 	}
 	for _, u := range []string{submitted, rep.Track.PermalinkURL} {
@@ -186,6 +184,69 @@ func (l *library) Save(rep *Report, submitted string, o scanOpts) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// writeTracks replaces the searchable track rows of a set.
+func writeTracks(tx *sql.Tx, id int64, entries []*Entry) error {
+	if _, err := tx.Exec(`DELETE FROM set_tracks WHERE set_id = ?`, id); err != nil {
+		return err
+	}
+	for i, e := range entries {
+		if _, err := tx.Exec(`INSERT INTO set_tracks (set_id, pos, artist, title, time_sec, confidence) VALUES (?, ?, ?, ?, ?, ?)`,
+			id, i, e.Artist, e.Title, e.TimeSec, e.Confidence); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// entryRef points at one track of a stored set.
+type entryRef struct {
+	Artist  string `json:"artist"`
+	Title   string `json:"title"`
+	TimeSec int    `json:"time_sec"`
+}
+
+func findEntry(entries []*Entry, ref entryRef) int {
+	for i, e := range entries {
+		if e.TimeSec == ref.TimeSec && e.Artist == ref.Artist && e.Title == ref.Title {
+			return i
+		}
+	}
+	return -1
+}
+
+var errNoEntry = errors.New("that track is not in the list any more — reload the set")
+
+// Update changes the tracks of a stored set in place and returns the new report.
+func (l *library) Update(id int64, fn func(entries []*Entry) ([]*Entry, error)) (*Report, error) {
+	tx, err := l.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var raw string
+	if err := tx.QueryRow(`SELECT report FROM sets WHERE id = ?`, id).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var sr storedReport
+	if err := json.Unmarshal([]byte(raw), &sr); err != nil {
+		return nil, err
+	}
+	if sr.Entries, err = fn(sr.Entries); err != nil {
+		return nil, err
+	}
+	out, err := json.Marshal(sr)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE sets SET report = ?, track_count = ? WHERE id = ?`, out, len(sr.Entries), id); err != nil {
+		return nil, err
+	}
+	if err := writeTracks(tx, id, sr.Entries); err != nil {
+		return nil, err
+	}
+	return &Report{sr.Track, sr.Dur, sr.Entries, sr.Unresolved, sr.TL, sr.Identified}, tx.Commit()
 }
 
 // Get loads a stored report, keeping only entries at or above minConf.

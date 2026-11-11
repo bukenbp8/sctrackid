@@ -49,6 +49,13 @@ type jobRequest struct {
 	NoLinks       bool   `json:"no_links"`
 	MinConfidence string `json:"min_confidence"`
 	Refresh       bool   `json:"refresh,omitempty"` // ignore the library and decode again
+
+	Retry *retryRef `json:"retry,omitempty"` // set by the server: re-identify one track of a stored set
+}
+
+type retryRef struct {
+	SetID int64 `json:"set_id,string"`
+	entryRef
 }
 
 type job struct {
@@ -126,6 +133,8 @@ func serveWeb(ctx context.Context, addr string, base options, gc guardConfig, db
 	mux.HandleFunc("GET /api/library", s.handleLibrarySearch)
 	mux.HandleFunc("GET /api/library/{id}", s.handleLibraryGet)
 	mux.HandleFunc("GET /api/library/{id}/txt", s.handleLibraryText)
+	mux.HandleFunc("POST /api/library/{id}/approve", s.handleApprove)
+	mux.HandleFunc("POST /api/library/{id}/retry", s.handleRetry)
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -206,7 +215,20 @@ func (s *server) runJob(ctx context.Context, j *job) {
 	w := &jobWriter{s: s, j: j}
 	logOut.Set(io.MultiWriter(os.Stderr, w))
 	fmt.Fprintf(os.Stderr, "\n== job #%d: %s\n", j.ID, j.Req.URL)
-	rep, err := analyze(ctx, j.Req.URL, o)
+	var rep *Report
+	var err error
+	if j.Req.Retry != nil {
+		rep, err = s.retry(ctx, j, o)
+	} else {
+		rep, err = analyze(ctx, j.Req.URL, o)
+		if rep != nil && err == nil && ctx.Err() == nil && s.lib != nil {
+			if lerr := s.lib.Save(rep, j.Req.URL, optsOf(j.Req, s.base)); lerr != nil {
+				logf("! could not save to library: %v", lerr)
+			} else {
+				defer s.publish(event{Type: "library", Text: strconv.FormatInt(rep.Track.ID, 10)})
+			}
+		}
+	}
 	var file, text string
 	if rep != nil {
 		text = rep.Text()
@@ -216,13 +238,6 @@ func (s *server) runJob(ctx context.Context, j *job) {
 			file = ""
 		} else {
 			logf("· saved tracklist to %s", file)
-		}
-	}
-	if rep != nil && err == nil && ctx.Err() == nil && s.lib != nil {
-		if lerr := s.lib.Save(rep, j.Req.URL, optsOf(j.Req, s.base)); lerr != nil {
-			logf("! could not save to library: %v", lerr)
-		} else {
-			defer s.publish(event{Type: "library"})
 		}
 	}
 	w.flush()
@@ -246,6 +261,61 @@ func (s *server) runJob(ctx context.Context, j *job) {
 	s.pruneLocked()
 	s.mu.Unlock()
 	s.broadcastJobs()
+}
+
+// retry listens again at one track of a stored set and swaps in what it finds.
+func (s *server) retry(ctx context.Context, j *job, o options) (*Report, error) {
+	rt := j.Req.Retry
+	cur, err := s.lib.Get(rt.SetID, "")
+	if err != nil {
+		return nil, errors.New("that set is not in the archive any more")
+	}
+	i := findEntry(cur.Entries, rt.entryRef)
+	if i < 0 {
+		return nil, errNoEntry
+	}
+	others := append(append([]*Entry(nil), cur.Entries[:i]...), cur.Entries[i+1:]...)
+	found, absorbed, rejected, err := retryEntry(ctx, j.Req.URL, cur.Entries[i], others, o)
+	if err != nil {
+		return nil, err
+	}
+	rep, err := s.lib.Update(rt.SetID, func(es []*Entry) ([]*Entry, error) {
+		i := findEntry(es, rt.entryRef)
+		if i < 0 || es[i].Approved {
+			return nil, errNoEntry
+		}
+		if absorbed == nil {
+			es[i] = found
+			return es, nil
+		}
+		// A neighbour plays there: remember the rejection on it, so a rescan
+		// does not bring the wrong track back, and drop the wrong entry.
+		n := findEntry(es, entryRef{absorbed.Artist, absorbed.Title, absorbed.TimeSec})
+		if n < 0 {
+			return nil, errNoEntry
+		}
+		es[n].Rejected = append(es[n].Rejected, rejected...)
+		return append(es[:i], es[i+1:]...), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.libraryChanged(rep)
+	return rep, nil
+}
+
+// libraryChanged brings finished jobs showing the same set up to date and
+// tells browsers to reload it.
+func (s *server) libraryChanged(rep *Report) {
+	text := rep.Text()
+	s.mu.Lock()
+	for _, j := range s.jobs {
+		if j.result != nil && j.Finished != nil && j.result.Track.ID == rep.Track.ID {
+			j.result, j.text, j.Tracks = rep, text, len(rep.Entries)
+		}
+	}
+	s.mu.Unlock()
+	s.publish(event{Type: "library", Text: strconv.FormatInt(rep.Track.ID, 10)})
 }
 
 func (s *server) pruneLocked() {
@@ -410,6 +480,7 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := sr.jobRequest
+	req.Retry = nil
 	req.URL = strings.TrimSpace(req.URL)
 	u, err := url.Parse(req.URL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") ||
@@ -434,7 +505,19 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.enqueue(w, r, req)
+}
+
+// enqueue applies the per-client and queue limits and adds the job.
+func (s *server) enqueue(w http.ResponseWriter, r *http.Request, req jobRequest) {
 	client := s.guard.clientKey(r)
+	var title, uploader string
+	var dur int
+	if req.Retry != nil { // the set is known already: label the job right away
+		if rep, err := s.lib.Get(req.Retry.SetID, ""); err == nil {
+			title, uploader, dur = rep.Track.Title, rep.Track.User.Username, rep.Dur
+		}
+	}
 
 	s.mu.Lock()
 	active, queued := 0, 0
@@ -442,7 +525,8 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		if j.State != stateQueued && j.State != stateRunning {
 			continue
 		}
-		if j.Req.URL == req.URL { // the same link already waiting or running: don't queue it twice
+		same := (j.Req.Retry == nil) == (req.Retry == nil) && (req.Retry == nil || *j.Req.Retry == *req.Retry)
+		if j.Req.URL == req.URL && same { // the same link already waiting or running: don't queue it twice
 			s.mu.Unlock()
 			httpError(w, 409, fmt.Sprintf("already in the queue as job #%d", j.ID))
 			return
@@ -471,7 +555,8 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.nextID++
-	j := &job{ID: s.nextID, Req: req, State: stateQueued, Created: time.Now(), owner: client}
+	j := &job{ID: s.nextID, Req: req, State: stateQueued, Created: time.Now(), owner: client,
+		Title: title, Uploader: uploader, Duration: dur}
 	s.jobs = append(s.jobs, j)
 	s.mu.Unlock()
 
@@ -632,16 +717,101 @@ func (s *server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"enabled": true, "sets": sets})
 }
 
+// minParam is the ?min= confidence filter, "" when absent or invalid.
+func minParam(r *http.Request) string {
+	min := r.URL.Query().Get("min")
+	if _, ok := confRank[min]; !ok {
+		min = ""
+	}
+	return min
+}
+
+// handleApprove marks one track of a stored set as confirmed by a user (or takes that back).
+func (s *server) handleApprove(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if s.lib == nil || err != nil {
+		httpError(w, 404, "no such set")
+		return
+	}
+	var body struct {
+		entryRef
+		Approved bool `json:"approved"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		httpError(w, 400, "invalid request")
+		return
+	}
+	rep, err := s.lib.Update(id, func(es []*Entry) ([]*Entry, error) {
+		i := findEntry(es, body.entryRef)
+		if i < 0 {
+			return nil, errNoEntry
+		}
+		es[i].Approved = body.Approved
+		return es, nil
+	})
+	switch {
+	case errors.Is(err, errNoEntry):
+		httpError(w, 409, err.Error())
+		return
+	case err != nil:
+		httpError(w, 404, "no such set")
+		return
+	}
+	s.libraryChanged(rep)
+	if min := minParam(r); min != "" {
+		c := *rep
+		c.Entries = filterConfidence(rep.Entries, min)
+		rep = &c
+	}
+	writeJSON(w, 200, map[string]any{"identified": rep.Identified, "result": rep.JSON()})
+}
+
+// handleRetry queues a job that listens again at one track of a stored set.
+func (s *server) handleRetry(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if s.lib == nil || err != nil {
+		httpError(w, 404, "no such set")
+		return
+	}
+	var body struct {
+		entryRef
+		PowChallenge string `json:"pow_challenge"`
+		PowNonce     string `json:"pow_nonce"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		httpError(w, 400, "invalid request")
+		return
+	}
+	rep, err := s.lib.Get(id, "")
+	if err != nil {
+		httpError(w, 404, "no such set")
+		return
+	}
+	switch i := findEntry(rep.Entries, body.entryRef); {
+	case i < 0:
+		httpError(w, 409, errNoEntry.Error())
+		return
+	case rep.Entries[i].Approved:
+		httpError(w, 409, "this track is confirmed — unconfirm it first")
+		return
+	case rep.Entries[i].TimeSec < 0:
+		httpError(w, 409, "this track has no timestamp, so it cannot be listened to again")
+		return
+	}
+	if msg := s.guard.checkPoW(body.PowChallenge, body.PowNonce); msg != "" {
+		httpError(w, 403, msg)
+		return
+	}
+	s.enqueue(w, r, jobRequest{URL: rep.Track.PermalinkURL, Retry: &retryRef{SetID: id, entryRef: body.entryRef}})
+}
+
 func (s *server) libraryReport(w http.ResponseWriter, r *http.Request) *Report {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if s.lib == nil || err != nil {
 		httpError(w, 404, "no such set")
 		return nil
 	}
-	min := r.URL.Query().Get("min")
-	if _, ok := confRank[min]; !ok {
-		min = ""
-	}
+	min := minParam(r)
 	rep, err := s.lib.Get(id, min)
 	if err != nil {
 		httpError(w, 404, "no such set")

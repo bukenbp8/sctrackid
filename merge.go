@@ -14,10 +14,18 @@ type Entry struct {
 	ShazamURL  string         `json:"shazam_url,omitempty"`
 	Confidence string         `json:"confidence"`
 	Links      *Links         `json:"links,omitempty"`
+	Approved   bool           `json:"approved,omitempty"` // a user confirmed this is the right track
+	Rejected   []TrackName    `json:"rejected,omitempty"` // what was listed here before a retry replaced it
 
 	order    int
 	times    map[string][]int
 	variants map[string]int
+}
+
+// TrackName is a bare artist/title pair.
+type TrackName struct {
+	Artist string `json:"artist"`
+	Title  string `json:"title"`
 }
 
 var (
@@ -115,6 +123,12 @@ func Merge(cands []Candidate) []*Entry {
 		e.Confidence = confidence(e.Sources)
 	}
 
+	sortEntries(entries)
+	return entries
+}
+
+// sortEntries orders by time, entries without one last.
+func sortEntries(entries []*Entry) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
 		if (a.TimeSec < 0) != (b.TimeSec < 0) {
@@ -125,7 +139,39 @@ func Merge(cands []Candidate) []*Entry {
 		}
 		return a.order < b.order
 	})
-	return entries
+}
+
+// keepUserEdits carries what users did to an earlier result over to a fresh
+// one: confirmed tracks and retried slots survive a rescan, and a track that
+// was rejected for a slot does not come back there.
+func keepUserEdits(old, fresh []*Entry) []*Entry {
+	var kept []*Entry
+	for _, e := range old {
+		if e.Approved || len(e.Rejected) > 0 {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) == 0 {
+		return fresh
+	}
+	out := append([]*Entry(nil), kept...)
+next:
+	for _, n := range fresh {
+		for _, k := range kept {
+			if sameTrack(k.Artist, k.Title, n.Artist, n.Title) {
+				continue next
+			}
+			near := k.TimeSec < 0 || n.TimeSec < 0 || max(k.TimeSec-n.TimeSec, n.TimeSec-k.TimeSec) <= 180
+			for _, r := range k.Rejected {
+				if near && sameTrack(r.Artist, r.Title, n.Artist, n.Title) {
+					continue next
+				}
+			}
+		}
+		out = append(out, n)
+	}
+	sortEntries(out)
+	return out
 }
 
 func confidence(src map[string]int) string {
