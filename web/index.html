@@ -108,7 +108,8 @@ form.cmd { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
 .opts input[type=checkbox] { appearance: none; width: 14px; height: 14px; border: 1px solid var(--dim); margin: 0; display: grid; place-items: center; cursor: pointer; }
 .opts input[type=checkbox]:checked { border-color: var(--cyan); background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
 .opts input:checked + span { color: var(--txt); }
-.opts select { background: var(--bg2); color: var(--txt); border: 1px solid var(--line); font: 13px var(--mono); padding: 3px 6px; }
+.opts select, .opts input[type=number] { background: var(--bg2); color: var(--txt); border: 1px solid var(--line); font: 13px var(--mono); padding: 3px 6px; }
+.opts input[type=number] { width: 6.5em; }
 .msg { grid-column: 1 / -1; min-height: 1.5em; font-size: 13px; margin-top: -4px; }
 .msg.err { color: var(--mag); } .msg.ok { color: var(--grn); }
 .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
@@ -235,7 +236,8 @@ tr.ok td.tr .a { color: var(--grn); }
   .opts label { min-height: 40px; }
   .opts label:last-child { grid-column: 1 / -1; }
   .opts input[type=checkbox] { width: 20px; height: 20px; flex: none; }
-  .opts select { font-size: 16px; padding: 6px 8px; } /* 16px: no zoom on focus in iOS */
+  .opts select, .opts input[type=number] { font-size: 16px; padding: 6px 8px; } /* 16px: no zoom on focus in iOS */
+  .opts label.wide { grid-column: 1 / -1; }
   .msg:empty { display: none; }
 
   .queue { max-height: 45vh; }
@@ -326,6 +328,9 @@ footer { margin-top: 30px; color: #3f3a57; font-size: 11px; letter-spacing: .2em
         <label><input type="checkbox" id="no_1001"><span>skip 1001tracklists</span></label>
         <label><input type="checkbox" id="no_links"><span>skip links</span></label>
         <label title="ignore the archive and decode the set again"><input type="checkbox" id="refresh"><span>force rescan</span></label>
+        <label class="wide" title="for sets of pitched-down tracks: every sample is sped up from the set's tempo to this one before Shazam hears it. Enter the tempo the tracks were pitched down from, e.g. 120">downtempo
+          <input type="number" id="downtempo" min="60" max="360" step="0.1" placeholder="off" inputmode="decimal"><span>bpm</span>
+        </label>
         <label>min confidence
           <select id="min_confidence"><option>low</option><option>medium</option><option>high</option></select>
         </label>
@@ -756,6 +761,8 @@ $("#form").addEventListener("submit", async (e) => {
   const msg = $("#msg"), go = $("#go");
   const body = { url: $("#url").value.trim(), min_confidence: $("#min_confidence").value };
   for (const k of ["thorough", "no_audio", "no_comments", "no_1001", "no_links", "refresh"]) body[k] = $("#" + k).checked;
+  const dt = $("#downtempo").value.trim();
+  if (dt) body.downtempo = Number(dt);
   body.website = $("#website").value;
   go.disabled = true; msg.className = "msg"; msg.textContent = "> computing proof of work…";
   try {

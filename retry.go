@@ -44,7 +44,7 @@ func retryEntry(ctx context.Context, link string, old *Entry, others []*Entry, o
 	}
 
 	from := max(0, old.TimeSec+retryShifts[1])
-	length := retryShifts[len(retryShifts)-1] + o.sampleLen + old.TimeSec - from
+	length := retryShifts[len(retryShifts)-1] + readLen(o) + old.TimeSec - from
 	logf("· retry: listening again around %s (rejected: %s - %s)", fmtTime(old.TimeSec), old.Artist, old.Title)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-loglevel", "error",
 		"-ss", strconv.Itoa(from), "-t", strconv.Itoa(length), "-i", input,
@@ -70,6 +70,10 @@ func retryEntry(ctx context.Context, link string, old *Entry, others []*Entry, o
 	listed := map[*Entry]int{} // windows in which a track already in the list was heard
 	var neighbour *Entry
 	client := &http.Client{Timeout: 20 * time.Second}
+	var tempo *tempoTracker
+	if o.downtempo > 0 {
+		tempo = &tempoTracker{target: o.downtempo}
+	}
 
 windows:
 	for _, shift := range retryShifts {
@@ -78,7 +82,7 @@ windows:
 			continue
 		}
 		lo := (at - from) * sampleRate * 2
-		hi := min(len(pcm), lo+o.sampleLen*sampleRate*2)
+		hi := min(len(pcm), lo+readLen(o)*sampleRate*2)
 		if hi-lo < 4*sampleRate*2 {
 			continue
 		}
@@ -86,6 +90,7 @@ windows:
 		for i := range samples {
 			samples[i] = int16(binary.LittleEndian.Uint16(pcm[lo+i*2:]))
 		}
+		samples, _, _ = tempo.prepare(samples, o.sampleLen)
 		sig, peaks := MakeSignature(samples)
 		if peaks < silentPeaks {
 			logf("  %8s  — (near-silent, not sent)", fmtTime(at))

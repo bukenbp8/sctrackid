@@ -64,16 +64,20 @@ func openLibrary(path string) (*library, error) {
 
 // scanOpts are the options that change what a lookup finds.
 type scanOpts struct {
-	Thorough   bool   `json:"thorough"`
-	NoAudio    bool   `json:"no_audio"`
-	NoComments bool   `json:"no_comments"`
-	No1001     bool   `json:"no_1001"`
-	NoLinks    bool   `json:"no_links"`
-	MinConf    string `json:"min_confidence"`
+	Thorough   bool    `json:"thorough"`
+	NoAudio    bool    `json:"no_audio"`
+	NoComments bool    `json:"no_comments"`
+	No1001     bool    `json:"no_1001"`
+	NoLinks    bool    `json:"no_links"`
+	MinConf    string  `json:"min_confidence"`
+	Downtempo  float64 `json:"downtempo,omitempty"`
 }
 
 func optsOf(r jobRequest, base options) scanOpts {
-	o := scanOpts{r.Thorough, r.NoAudio, r.NoComments, r.No1001, r.NoLinks, r.MinConfidence}
+	o := scanOpts{r.Thorough, r.NoAudio, r.NoComments, r.No1001, r.NoLinks, r.MinConfidence, r.Downtempo}
+	if o.NoAudio {
+		o.Downtempo = 0 // nothing is listened to, so the tempo changes nothing
+	}
 	if o.MinConf == "" {
 		o.MinConf = base.minConf
 	}
@@ -87,6 +91,7 @@ var confRank = map[string]int{"low": 0, "medium": 1, "high": 2}
 func (have scanOpts) covers(want scanOpts) bool {
 	return (!have.NoAudio || want.NoAudio) &&
 		(have.Thorough || !want.Thorough || want.NoAudio) &&
+		(have.Downtempo == want.Downtempo || want.NoAudio) &&
 		(!have.NoComments || want.NoComments) &&
 		(!have.No1001 || want.No1001) &&
 		(!have.NoLinks || want.NoLinks) &&
@@ -147,7 +152,16 @@ func (l *library) Save(rep *Report, submitted string, o scanOpts) error {
 	var raw, oldRep string
 	if err := tx.QueryRow(`SELECT opts, report FROM sets WHERE id = ?`, id).Scan(&raw, &oldRep); err == nil {
 		var have scanOpts
-		replace = json.Unmarshal([]byte(raw), &have) != nil || o.covers(have)
+		if json.Unmarshal([]byte(raw), &have) != nil {
+			replace = true
+		} else {
+			// A run at another downtempo target hears other audio, not less
+			// of it: the newer choice of tempo wins.
+			if !have.NoAudio && !o.NoAudio {
+				have.Downtempo = o.Downtempo
+			}
+			replace = o.covers(have)
+		}
 		var old storedReport
 		if replace && json.Unmarshal([]byte(oldRep), &old) == nil {
 			rep.Entries = keepUserEdits(old.Entries, rep.Entries) // confirmations and retries outlive a rescan
@@ -247,6 +261,16 @@ func (l *library) Update(id int64, fn func(entries []*Entry) ([]*Entry, error)) 
 		return nil, err
 	}
 	return &Report{sr.Track, sr.Dur, sr.Entries, sr.Unresolved, sr.TL, sr.Identified}, tx.Commit()
+}
+
+// Opts returns the options a stored set was decoded with.
+func (l *library) Opts(id int64) scanOpts {
+	var raw string
+	var o scanOpts
+	if l.db.QueryRow(`SELECT opts FROM sets WHERE id = ?`, id).Scan(&raw) == nil {
+		_ = json.Unmarshal([]byte(raw), &o)
+	}
+	return o
 }
 
 // Get loads a stored report, keeping only entries at or above minConf.

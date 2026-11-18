@@ -30,6 +30,14 @@ Shazam also says how far into the recording a sample is. From that the list show
 
 Shazam often names one playing track as different releases of the same song from one sample to the next ("Nein, Mann! (X Remix)", then "Nein Mann (Y Remix)"). Entries by the same artist with the same title outside the brackets, within eight minutes of each other, are folded into one, named after the version heard most. Two versions that both come from the description or the comments are left alone.
 
+### Pitched-down sets (downtempo)
+
+Shazam only recognises a track played within about 2% of its original speed. A set of tracks pitched down vinyl style (pitch and tempo together, as with the pitch fader and key lock off), say from 120 to 90 BPM, gets almost no matches, and the few it gets are often wrong.
+
+Enter the tempo the tracks were pitched down *from* in the "downtempo" field (`-downtempo 120` on the command line). Each sample's tempo is then measured, and the sample is sped up to that tempo before Shazam hears it, which restores the pitch as well. A window without a clear beat uses the tempo of the windows before it. Tracks that were originally much faster or slower than the number entered (more than about 2–3%) still go unmatched, so for a mixed set try a second run with another target.
+
+The log shows the tempo measured and the speed-up used. A downtempo run is cached separately, is served from the archive only for the same target, and replaces an earlier run made without it (or with another target). Retrying a track (↻) listens with the same speed-up the set was decoded with.
+
 ### Confirming and retrying tracks
 
 Each track of a decoded set has two buttons in the "verify" column:

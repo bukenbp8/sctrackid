@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -41,14 +42,15 @@ const (
 )
 
 type jobRequest struct {
-	URL           string `json:"url"`
-	Thorough      bool   `json:"thorough"`
-	NoAudio       bool   `json:"no_audio"`
-	NoComments    bool   `json:"no_comments"`
-	No1001        bool   `json:"no_1001"`
-	NoLinks       bool   `json:"no_links"`
-	MinConfidence string `json:"min_confidence"`
-	Refresh       bool   `json:"refresh,omitempty"` // ignore the library and decode again
+	URL           string  `json:"url"`
+	Thorough      bool    `json:"thorough"`
+	NoAudio       bool    `json:"no_audio"`
+	NoComments    bool    `json:"no_comments"`
+	No1001        bool    `json:"no_1001"`
+	NoLinks       bool    `json:"no_links"`
+	MinConfidence string  `json:"min_confidence"`
+	Downtempo     float64 `json:"downtempo,omitempty"` // target BPM, 0 = off
+	Refresh       bool    `json:"refresh,omitempty"`   // ignore the library and decode again
 
 	Retry *retryRef `json:"retry,omitempty"` // set by the server: re-identify one track of a stored set
 }
@@ -199,6 +201,7 @@ func (s *server) runJob(ctx context.Context, j *job) {
 	o.noComments = j.Req.NoComments
 	o.no1001 = j.Req.No1001
 	o.noLinks = j.Req.NoLinks
+	o.downtempo = j.Req.Downtempo
 	o.noCache = o.noCache || j.Req.Refresh // a forced rescan asks Shazam again instead of replaying cached answers
 	if j.Req.MinConfidence != "" {
 		o.minConf = j.Req.MinConfidence
@@ -507,6 +510,11 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, "min_confidence must be low, medium or high")
 		return
 	}
+	if req.Downtempo != 0 && (req.Downtempo < minBPM || req.Downtempo > 2*maxBPM) {
+		httpError(w, 400, fmt.Sprintf("the downtempo target must be between %g and %g BPM", minBPM, 2*maxBPM))
+		return
+	}
+	req.Downtempo = math.Round(req.Downtempo*10) / 10
 
 	if msg := s.guard.checkPoW(sr.PowChallenge, sr.PowNonce); msg != "" {
 		httpError(w, 403, msg)
@@ -815,7 +823,9 @@ func (s *server) handleRetry(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 403, msg)
 		return
 	}
-	s.enqueue(w, r, jobRequest{URL: rep.Track.PermalinkURL, Retry: &retryRef{SetID: id, entryRef: body.entryRef}})
+	// listen the way the set was decoded: a pitched-down set needs its speed-up again
+	s.enqueue(w, r, jobRequest{URL: rep.Track.PermalinkURL, Downtempo: s.lib.Opts(id).Downtempo,
+		Retry: &retryRef{SetID: id, entryRef: body.entryRef}})
 }
 
 func (s *server) libraryReport(w http.ResponseWriter, r *http.Request) *Report {

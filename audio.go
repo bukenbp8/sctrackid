@@ -27,6 +27,8 @@ type sample struct {
 	sig    []byte
 	n      int
 	peaks  int
+	speed  float64 // downtempo mode: how much faster than the set the audio was sent (0 = unchanged)
+	bpm    float64 // downtempo mode: the set tempo measured there
 	alt    *sample // a second window half an interval later, for double-checking lone matches
 }
 
@@ -129,6 +131,9 @@ func openCache(track *Track, o options) *shazamCache {
 		return c
 	}
 	name := fmt.Sprintf("%d-%ds", track.ID, o.sampleLen)
+	if o.downtempo > 0 { // other audio is sent, so other answers come back
+		name += fmt.Sprintf("-dt%g", o.downtempo)
+	}
 	if o.file != "" { // a local file may be offset differently from the stream
 		if st, err := os.Stat(o.file); err == nil {
 			name += fmt.Sprintf("-file%d", st.Size())
@@ -197,7 +202,11 @@ func decode(ctx context.Context, input string, o options) (<-chan sample, <-chan
 		}
 		r := bufio.NewReaderSize(stdout, 1<<20)
 		pos := 0
-		buf := make([]byte, o.sampleLen*sampleRate*2)
+		buf := make([]byte, readLen(o)*sampleRate*2)
+		var tempo *tempoTracker
+		if o.downtempo > 0 {
+			tempo = &tempoTracker{target: o.downtempo}
+		}
 		// read the next window; short reports that the audio ended inside it
 		window := func(off int) (s *sample, short bool) {
 			n, rerr := io.ReadFull(r, buf)
@@ -209,10 +218,11 @@ func decode(ctx context.Context, input string, o options) (<-chan sample, <-chan
 			for i := range samples {
 				samples[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
 			}
-			sig, peaks := MakeSignature(samples)
-			return &sample{offset: off, sig: sig, n: len(samples), peaks: peaks}, rerr != nil
+			send, speed, bpm := tempo.prepare(samples, o.sampleLen)
+			sig, peaks := MakeSignature(send)
+			return &sample{offset: off, sig: sig, n: len(send), peaks: peaks, speed: speed, bpm: bpm}, rerr != nil
 		}
-		altGap := (o.interval/2 - o.sampleLen) * sampleRate // < 0: no room for in-between windows
+		altGap := (o.interval/2 - readLen(o)) * sampleRate // < 0: no room for in-between windows
 		for off := o.interval / 2; ; off += o.interval {
 			if skip := off*sampleRate - pos; skip > 0 {
 				n, _ := io.CopyN(io.Discard, r, int64(skip*2))
@@ -374,6 +384,9 @@ func scanWindows(ctx context.Context, stream <-chan sample, cache *shazamCache, 
 				return nil // not cached, not marked done: a rerun will retry it
 			}
 			pace.success()
+			if t != nil && s.speed > 0 && s.speed != 1 {
+				t.Speed = s.speed
+			}
 			cache.put(s.offset, t)
 		}
 		if t != nil {
@@ -489,6 +502,9 @@ func scanWindows(ctx context.Context, stream <-chan sample, cache *shazamCache, 
 	}
 	logf("· shazam: %d requests, %d cached, %d silent skipped, %d rate limits, %d samples checked in %d windows",
 		stats.requests, stats.cached, stats.silent, stats.limited, len(done), len(got))
+	if o.downtempo > 0 {
+		logTempo(got, o.downtempo)
+	}
 	if verify.checked > 0 {
 		logf("· single matches listened to again: %d confirmed, %d not (kept as low confidence)", verify.confirmed, verify.weak)
 	}

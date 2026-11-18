@@ -258,7 +258,8 @@ type ShazamTrack struct {
 	// Where the sample sits in the recording, from the response's match data.
 	Matched bool    `json:"matched,omitempty"`
 	Offset  float64 `json:"offset,omitempty"` // seconds into the recording at the start of the sample
-	Skew    float64 `json:"skew,omitempty"`   // tempo difference: 0.02 = the recording advances 2% faster than the set
+	Skew    float64 `json:"skew,omitempty"`   // tempo difference: 0.02 = the recording advances 2% faster than the audio sent
+	Speed   float64 `json:"speed,omitempty"`  // downtempo mode: the audio sent was the set sped up this much (0 = not)
 }
 
 // startIn estimates when the recording's first second falls in the set, for
@@ -267,7 +268,12 @@ func (t *ShazamTrack) startIn(sampleAt int) (int, bool) {
 	if !t.Matched || t.Skew <= -0.5 {
 		return 0, false
 	}
-	return int(math.Round(float64(sampleAt) - t.Offset/(1+t.Skew))), true
+	speed := t.Speed
+	if speed <= 0 {
+		speed = 1
+	}
+	// one second of the recording takes speed/(1+skew) seconds of the set
+	return int(math.Round(float64(sampleAt) - t.Offset*speed/(1+t.Skew))), true
 }
 
 func uuid4() string {

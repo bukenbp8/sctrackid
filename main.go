@@ -36,6 +36,7 @@ type options struct {
 	noCache    bool
 	noLinks    bool
 	ytKey      string
+	downtempo  float64 // target tempo in BPM: speed every window up to it (0 = off)
 
 	onResolved func(t *Track, dur int) // web mode: called once the SoundCloud track is known
 }
@@ -51,6 +52,7 @@ func main() {
 	flag.BoolVar(&o.noCache, "no-cache", false, "ignore cached Shazam results from earlier runs")
 	flag.BoolVar(&o.noLinks, "no-links", false, "don't look up streaming links")
 	flag.StringVar(&o.ytKey, "youtube-key", os.Getenv("YOUTUBE_API_KEY"), "free YouTube Data API key for direct video links on every track (env YOUTUBE_API_KEY)")
+	flag.Float64Var(&o.downtempo, "downtempo", 0, "for sets of pitched-down tracks: speed every sample up to this tempo in BPM (the tracks' original tempo, e.g. 120) before asking Shazam; 0 = off")
 	flag.BoolVar(&o.noAudio, "no-audio", false, "skip audio fingerprinting (comments + description only)")
 	flag.BoolVar(&o.noComments, "no-comments", false, "skip comment scraping")
 	flag.BoolVar(&o.no1001, "no-1001", false, "skip the 1001tracklists search")
@@ -71,6 +73,10 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if o.downtempo != 0 && (o.downtempo < minBPM || o.downtempo > 2*maxBPM) {
+		fmt.Fprintf(os.Stderr, "error: -downtempo must be between %g and %g BPM (or 0 for off)\n", minBPM, 2*maxBPM)
+		os.Exit(2)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *serve != "" {

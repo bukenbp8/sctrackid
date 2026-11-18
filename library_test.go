@@ -123,3 +123,39 @@ func TestUserEdits(t *testing.T) {
 		t.Error("user edits lost on rescan")
 	}
 }
+
+func TestLibraryDowntempoReplaces(t *testing.T) {
+	lib, err := openLibrary(filepath.Join(t.TempDir(), "lib.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := "https://soundcloud.com/dj/spaetsauna"
+	plain := scanOpts{MinConf: "low"}
+	dt := scanOpts{MinConf: "low", Downtempo: 120}
+	if err := lib.Save(testReport(42, &Entry{Artist: "A", Title: "Stray", TimeSec: 60}), link, plain); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := lib.Lookup(link, dt); ok {
+		t.Error("a plain run was served for a downtempo request")
+	}
+	// the downtempo rerun replaces the plain one, and is served from then on
+	if err := lib.Save(testReport(42, &Entry{Artist: "B", Title: "Real", TimeSec: 60}, &Entry{Artist: "C", Title: "Too", TimeSec: 400}), link, dt); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := lib.Get(42, ""); len(got.Entries) != 2 {
+		t.Fatalf("downtempo run did not replace the plain one: %+v", got.Entries)
+	}
+	if _, ok := lib.Lookup(link, dt); !ok {
+		t.Error("downtempo result not served for the same request")
+	}
+	if lib.Opts(42).Downtempo != 120 {
+		t.Errorf("Opts = %+v", lib.Opts(42))
+	}
+	// a no-audio run still never replaces it
+	if err := lib.Save(testReport(42), link, scanOpts{NoAudio: true, MinConf: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := lib.Get(42, ""); len(got.Entries) != 2 {
+		t.Error("a no-audio run replaced the downtempo result")
+	}
+}
